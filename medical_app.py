@@ -405,9 +405,11 @@ def calc_drug_by_disease(matched_rx):
         total=sum(date_max.values())
         if total>=30:
             rep=items[0]
+            # UNKNOWN 코드면 약품명으로 대체
+            display_disease = rep.get('disease','') or rep.get('drug_name','')
             result[f"{code}_{comp}"]={
-                'code':code,
-                'disease':rep.get('disease',''),
+                'code': code if code != 'UNKNOWN' else '',
+                'disease': display_disease,
                 'drug_name':rep.get('drug_name',''),
                 'component':rep.get('component',''),
                 'total_days':total,
@@ -440,15 +442,19 @@ def analyze(api_key, customer_name, structured, all_text):
 {all_text[:4000]}
 
 [핵심 판단 규칙]
-1. item1: structured의 records_3m 데이터만 사용 (날짜 재계산 절대 금지)
-   - is_pharmacy:true 인 약국 기록도 투약 항목에 반드시 포함할 것
-   - 약국 처방 기록은 투약 목록에 추가 (약품명, 투약일수 포함)
+1. item1: structured의 records_3m + rx_3m 데이터 모두 사용 (날짜 재계산 절대 금지)
+   - records_3m: 진료 기록 (질병확정진단, 치료 등)
+   - rx_3m: 3개월 이내 처방약 기록 → 반드시 투약 항목에 전부 포함
+   - rx_3m의 각 약품을 투약 목록에 추가 (약품명, 성분명, 투약일수 포함)
+   - rx_3m가 비어있지 않으면 반드시 투약:해당:true 로 설정
 2. item3: visits_1y_2plus 데이터 사용. 1회 방문이라도 정밀검사(혈액검사/X-ray/MRI/근전도/관절천자/초음파/내시경 등) 있으면 포함
 3. item4 치료7일: visits_5y_7plus 그대로 사용
 4. item4 투약30일: drug_by_disease_5y 그대로 사용 (재계산 금지)
+   - drug_by_disease_5y의 모든 항목을 빠짐없이 표시 (코드가 없거나 UNKNOWN이어도 포함)
    - 같은 질병코드라도 성분명이 다른 약품은 반드시 독립 항목으로 표시
    - 처방내역의 모든 날짜와 투약일수를 빠짐없이 표시
    - 약품명은 drug_name 필드 그대로 사용
+   - drug_by_disease_5y에 항목이 있으면 반드시 해당:true 로 설정
 5. item4 수술: surgeries_5y 사용. 물리치료/신경차단/주사 절대 수술로 분류 금지
 6. 질병코드 다르면 반드시 독립 항목 (AM513≠AS3350, 경추≠요추≠무릎≠어깨)
 7. 해당없는 항목은 해당:false
@@ -1140,7 +1146,14 @@ if btn:
             },
             'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y[:15]],
             'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y[:20]],
-            'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y]
+            'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y],
+            'rx_3m':[{
+                'date':rx['date'],
+                'drug_name':rx['drug_name'],
+                'component':rx['component'],
+                'days':rx['days'],
+                'hospital':rx['hospital']
+            } for rx in rx if rx.get('date','') >= d3.isoformat()]
         }
 
         with st.spinner("🤖 Claude AI 분석 중... (30초~1분 소요)"):
