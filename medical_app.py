@@ -8,9 +8,6 @@ from datetime import date, timedelta
 from io import BytesIO
 from collections import defaultdict
 
-for pkg in ['firebase-admin']:
-    try: __import__(pkg.replace('-','_'))
-    except: subprocess.check_call([sys.executable,'-m','pip','install',pkg,'--break-system-packages','-q'])
 
 for pkg in ['reportlab','anthropic']:
     try: __import__(pkg)
