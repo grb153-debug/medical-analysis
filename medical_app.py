@@ -274,8 +274,10 @@ def parse_rx(content):
                         if not drug or len(drug)<2: continue
                         try: days=int(re.search(r'\d+',days_raw).group())
                         except: days=0
+                        # 처방조제 중복 방지: 외래(처방) 우선, 처방조제는 외래 없을때만
+                        rx_type = str(row[3] or '').strip().replace('\n','') if len(row) > 3 else ''
                         if days>0:
-                            rxs.append({'date':d,'hospital':h,'drug_name':drug,'component':comp,'days':days})
+                            rxs.append({'date':d,'hospital':h,'drug_name':drug,'component':comp,'days':days,'rx_type':rx_type})
                     except: continue
     return rxs
 
@@ -383,25 +385,38 @@ def calc_drug_by_disease(matched_rx):
         if not comp: return ''
         return comp.lower().split()[0] if comp.strip() else ''
 
-    groups=defaultdict(list)
+    # 처방조제 중복 제거: 같은 날 같은 성분이면 외래 우선
+    deduped = []
+    seen = {}  # (date, comp_key) → 이미 외래로 추가됐으면 처방조제 스킵
     for rx in matched_rx:
+        comp_key = norm_comp(rx.get('component','')) or rx.get('drug_name','').lower()[:15]
+        key = (rx['date'], comp_key)
+        rx_type = rx.get('rx_type', '')
+        if key not in seen:
+            seen[key] = rx_type
+            deduped.append(rx)
+        elif '처방조제' in seen[key] and '외래' in rx_type:
+            # 기존이 처방조제였는데 외래가 나오면 교체
+            deduped = [r for r in deduped if not (r['date']==rx['date'] and (norm_comp(r.get('component','')) or r.get('drug_name','').lower()[:15])==comp_key)]
+            deduped.append(rx)
+            seen[key] = rx_type
+
+    groups=defaultdict(list)
+    for rx in deduped:
         comp_key=norm_comp(rx.get('component',''))
         drug_key=rx.get('drug_name','').lower()[:15]
         code=rx.get('code','') or 'UNKNOWN'
-        # 성분명만으로 그룹핑 (질병코드 다르면 분리되는 문제 해결)
         key=comp_key or drug_key
         groups[key].append(rx)
 
     result={}
     for comp,items in groups.items():
-        # 같은 날 같은 성분 → 최대 일수만 (다른 날짜는 독립 합산)
         date_max={}
         code='UNKNOWN'
         for item in items:
             d=item['date']
             if d not in date_max or item['days']>date_max[d]:
                 date_max[d]=item['days']
-            # 질병코드 있으면 우선 사용
             if item.get('code') and item['code'] != 'UNKNOWN':
                 code = item['code']
 
