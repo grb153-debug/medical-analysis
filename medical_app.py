@@ -386,28 +386,31 @@ def calc_drug_by_disease(matched_rx):
     groups=defaultdict(list)
     for rx in matched_rx:
         comp_key=norm_comp(rx.get('component',''))
-        drug_key=rx.get('drug_name','').lower()
+        drug_key=rx.get('drug_name','').lower()[:15]
         code=rx.get('code','') or 'UNKNOWN'
-        # 성분명 기준 그룹핑 (성분명 없으면 약품명 사용)
-        key=(code, comp_key or drug_key)
+        # 성분명만으로 그룹핑 (질병코드 다르면 분리되는 문제 해결)
+        key=comp_key or drug_key
         groups[key].append(rx)
 
     result={}
-    for (code,comp),items in groups.items():
+    for comp,items in groups.items():
         # 같은 날 같은 성분 → 최대 일수만 (다른 날짜는 독립 합산)
         date_max={}
+        code='UNKNOWN'
         for item in items:
             d=item['date']
-            # 같은 날 같은 성분이면 최대값, 다른 날짜는 독립 산정
             if d not in date_max or item['days']>date_max[d]:
                 date_max[d]=item['days']
+            # 질병코드 있으면 우선 사용
+            if item.get('code') and item['code'] != 'UNKNOWN':
+                code = item['code']
 
         total=sum(date_max.values())
         if total>=30:
             rep=items[0]
             # UNKNOWN 코드면 약품명으로 대체
             display_disease = rep.get('disease','') or rep.get('drug_name','')
-            result[f"{code}_{comp}"]={
+            result[f"{comp}"]={
                 'code': code if code != 'UNKNOWN' else '',
                 'disease': display_disease,
                 'drug_name':rep.get('drug_name',''),
