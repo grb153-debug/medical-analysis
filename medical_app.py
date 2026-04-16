@@ -8,11 +8,62 @@ from datetime import date, timedelta
 from io import BytesIO
 from collections import defaultdict
 
+for pkg in ['firebase-admin']:
+    try: __import__(pkg.replace('-','_'))
+    except: subprocess.check_call([sys.executable,'-m','pip','install',pkg,'--break-system-packages','-q'])
+
 for pkg in ['reportlab','anthropic']:
     try: __import__(pkg)
     except: subprocess.check_call([sys.executable,'-m','pip','install',pkg,'--break-system-packages','-q'])
 
 st.set_page_config(page_title="리치앤아이 병력분석", page_icon="🏥", layout="wide")
+
+# ===== URL 파라미터 읽기 =====
+def get_url_params():
+    try:
+        params = st.query_params
+        uid = params.get('uid', '')
+        cid = params.get('cid', '')
+        return uid, cid
+    except: return '', ''
+
+# ===== Firestore 저장 함수 =====
+def save_to_firestore(uid, cid, result, customer_name, today_str, cost_stats=None):
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore as fs
+        import os, json
+
+        # 이미 초기화됐는지 확인
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            # 환경변수나 secrets에서 Firebase 서비스 계정 키 읽기
+            if 'firebase' in st.secrets:
+                cred_dict = dict(st.secrets['firebase'])
+                cred = credentials.Certificate(cred_dict)
+            else:
+                st.error("Firebase 설정이 없습니다. Streamlit secrets에 firebase 설정을 추가해주세요.")
+                return False
+            firebase_admin.initialize_app(cred)
+
+        db_fs = fs.client()
+        doc_ref = db_fs.collection('users').document(uid).collection('customers').document(cid).collection('meta').document('medical_result')
+        doc_ref.set({
+            'result': result,
+            'customerName': customer_name,
+            'analyzedAt': fs.SERVER_TIMESTAMP,
+            'today_str': today_str,
+            'cost_stats': {
+                'total_paid': cost_stats.get('total_paid', 0) if cost_stats else 0,
+                'avg_paid': cost_stats.get('avg_paid', 0) if cost_stats else 0,
+                'total_count': cost_stats.get('total_count', 0) if cost_stats else 0,
+            } if cost_stats else {}
+        })
+        return True
+    except Exception as e:
+        st.error(f"저장 오류: {str(e)}")
+        return False
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800;900&display=swap');
@@ -963,6 +1014,12 @@ if 'cost_stats' not in st.session_state: st.session_state.cost_stats=None
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
     api_key=st.text_input("Claude API Key",type="password",placeholder="sk-ant-...")
+
+    # URL 파라미터에서 고객 정보 읽기
+    url_uid, url_cid = get_url_params()
+    if url_uid and url_cid:
+        st.markdown('<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:6px 10px;font-size:12px;color:#166534;margin-bottom:4px;">✅ 리치앤아이 고객 연동됨</div>', unsafe_allow_html=True)
+
     customer_name=st.text_input("고객 이름",placeholder="홍길동")
     st.markdown("### 📄 PDF 업로드")
     pdf_b=st.file_uploader("📋 기본진료정보",type="pdf",key="p1")
@@ -988,6 +1045,24 @@ with st.sidebar:
                 file_name=f"고객요약_{st.session_state.customer}_{date.today().strftime('%Y%m%d')}.pdf",
                 mime="application/pdf",use_container_width=True)
         except Exception as e: st.error(f"요약본 오류: {e}")
+
+        # 리치앤아이 연동 저장 버튼
+        if url_uid and url_cid:
+            st.markdown("---")
+            st.markdown("### 🔗 리치앤아이 저장")
+            if st.button("💾 병력사항 탭에 저장", use_container_width=True, type="primary"):
+                with st.spinner("저장 중..."):
+                    ok = save_to_firestore(
+                        url_uid, url_cid,
+                        st.session_state.result,
+                        st.session_state.customer,
+                        st.session_state.today_str,
+                        st.session_state.cost_stats
+                    )
+                    if ok:
+                        st.success("✅ 저장완료! 리치앤아이 병력사항 탭에서 확인하세요.")
+                    else:
+                        st.error("저장 실패. 다시 시도해주세요.")
 
 if btn:
     if not api_key.startswith('sk-ant-'):
