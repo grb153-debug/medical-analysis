@@ -388,15 +388,17 @@ def calc_drug_by_disease(matched_rx):
         comp_key=norm_comp(rx.get('component',''))
         drug_key=rx.get('drug_name','').lower()
         code=rx.get('code','') or 'UNKNOWN'
+        # 성분명 기준 그룹핑 (성분명 없으면 약품명 사용)
         key=(code, comp_key or drug_key)
         groups[key].append(rx)
 
     result={}
     for (code,comp),items in groups.items():
-        # 같은 날 같은 성분 → 최대 일수만
+        # 같은 날 같은 성분 → 최대 일수만 (다른 날짜는 독립 합산)
         date_max={}
         for item in items:
             d=item['date']
+            # 같은 날 같은 성분이면 최대값, 다른 날짜는 독립 산정
             if d not in date_max or item['days']>date_max[d]:
                 date_max[d]=item['days']
 
@@ -439,9 +441,14 @@ def analyze(api_key, customer_name, structured, all_text):
 
 [핵심 판단 규칙]
 1. item1: structured의 records_3m 데이터만 사용 (날짜 재계산 절대 금지)
+   - is_pharmacy:true 인 약국 기록도 투약 항목에 반드시 포함할 것
+   - 약국 처방 기록은 투약 목록에 추가 (약품명, 투약일수 포함)
 2. item3: visits_1y_2plus 데이터 사용. 1회 방문이라도 정밀검사(혈액검사/X-ray/MRI/근전도/관절천자/초음파/내시경 등) 있으면 포함
 3. item4 치료7일: visits_5y_7plus 그대로 사용
 4. item4 투약30일: drug_by_disease_5y 그대로 사용 (재계산 금지)
+   - 같은 질병코드라도 성분명이 다른 약품은 반드시 독립 항목으로 표시
+   - 처방내역의 모든 날짜와 투약일수를 빠짐없이 표시
+   - 약품명은 drug_name 필드 그대로 사용
 5. item4 수술: surgeries_5y 사용. 물리치료/신경차단/주사 절대 수술로 분류 금지
 6. 질병코드 다르면 반드시 독립 항목 (AM513≠AS3350, 경추≠요추≠무릎≠어깨)
 7. 해당없는 항목은 해당:false
@@ -1112,7 +1119,7 @@ if btn:
         structured={
             'today':today_str,
             'd3':d3.isoformat(),'d1y':d1y.isoformat(),'d5y':d5y.isoformat(),
-            'records_3m':[{'date':r['date'],'hospital':r['hospital'],'code':r['code'],'disease':r['disease']} for r in r3m if not r['is_pharmacy']],
+            'records_3m':[{'date':r['date'],'hospital':r['hospital'],'code':r['code'],'disease':r['disease'],'is_pharmacy':r['is_pharmacy']} for r in r3m],
             'visits_1y_2plus':{
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last'],'hospitals':v['hospitals'][:3]}
                 for code,v in visits1y.items() if v['count']>=2
