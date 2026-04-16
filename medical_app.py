@@ -889,9 +889,11 @@ def make_pdf(r, customer_name, today_str):
     doc=SimpleDocTemplate(buf,pagesize=A4,rightMargin=15*mm,leftMargin=15*mm,topMargin=15*mm,bottomMargin=15*mm)
 
     fn='Helvetica'
-    # 한글 폰트 다운로드 및 등록 (Streamlit Cloud 환경)
-    import urllib.request, tempfile
+    import os as _os
+    _base = _os.path.dirname(_os.path.abspath(__file__))
     font_paths = [
+        _os.path.join(_base, 'NanumGothic.ttf'),
+        _os.path.join(_base, 'fonts', 'NanumGothic.ttf'),
         '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
         '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
         'C:/Windows/Fonts/malgun.ttf',
@@ -899,14 +901,12 @@ def make_pdf(r, customer_name, today_str):
     ]
     for fp in font_paths:
         try:
-            if os.path.exists(fp):
+            if _os.path.exists(fp):
                 pdfmetrics.registerFont(TTFont('K', fp))
                 fn = 'K'
                 break
         except: pass
-    
-    # 위에서 못 찾으면 웹에서 다운로드
-    if fn == 'Helvetica':
+    if False:
         try:
             url = 'https://github.com/googlefonts/nanum-fonts/raw/main/NanumGothic/NanumGothic-Regular.ttf'
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
