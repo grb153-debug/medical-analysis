@@ -3,3 +3,4 @@ pdfplumber
 anthropic
 reportlab
 pillow
+firebase-admin
