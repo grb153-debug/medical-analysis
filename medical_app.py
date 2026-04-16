@@ -145,11 +145,19 @@ def parse_basic(content):
                         code=str(row[5] or '').strip().replace('\n','')
                         dis=str(row[6] or '').strip().replace('\n','')
                         if not re.match(r'\d{4}-\d{2}-\d{2}',d): continue
+                        # 본인부담금 파싱 (컬럼 9, 10, 11 순서: 총진료비, 보험혜택, 본인부담)
+                        total_fee=0; ins_fee=0; paid_fee=0
+                        try:
+                            if len(row)>8: total_fee=int(re.sub(r'[^0-9]','',str(row[8] or '')) or 0)
+                            if len(row)>9: ins_fee=int(re.sub(r'[^0-9]','',str(row[9] or '')) or 0)
+                            if len(row)>10: paid_fee=int(re.sub(r'[^0-9]','',str(row[10] or '')) or 0)
+                        except: pass
                         records.append({
                             'date':d,'hospital':h,'dept':dept,'in_out':io,
                             'code':code,'disease':dname(code,dis),
                             'is_pharmacy':is_pharm(h,dept),
-                            'is_inpatient':'입원' in io
+                            'is_inpatient':'입원' in io,
+                            'total_fee':total_fee,'ins_fee':ins_fee,'paid_fee':paid_fee
                         })
                     except: continue
     return records
@@ -238,6 +246,34 @@ def filter_dates(records, start, end):
             if start<=date.fromisoformat(r['date'])<=end: result.append(r)
         except: pass
     return result
+
+
+def calc_cost_stats(records):
+    """연도별/질병별 본인부담금 계산"""
+    from collections import defaultdict
+    year_data = defaultdict(lambda: {'total':0,'ins':0,'paid':0,'count':0})
+    disease_data = defaultdict(lambda: {'total':0,'paid':0,'count':0,'code':''})
+    for r in records:
+        y = r['date'][:4]
+        year_data[y]['total'] += r.get('total_fee',0)
+        year_data[y]['ins'] += r.get('ins_fee',0)
+        year_data[y]['paid'] += r.get('paid_fee',0)
+        year_data[y]['count'] += 1
+        key = r.get('disease') or '해당없음'
+        disease_data[key]['total'] += r.get('total_fee',0)
+        disease_data[key]['paid'] += r.get('paid_fee',0)
+        disease_data[key]['count'] += 1
+        if r.get('code') and r['code'] != '$':
+            disease_data[key]['code'] = r['code']
+    # 연도별 정렬
+    year_sorted = {y: year_data[y] for y in sorted(year_data.keys())}
+    # 질병별 내림차순 (상위 5개)
+    disease_sorted = sorted(disease_data.items(), key=lambda x: x[1]['paid'], reverse=True)
+    top5 = [(name, d) for name, d in disease_sorted if name != '해당없음'][:5]
+    total_paid = sum(d['paid'] for d in year_data.values())
+    avg_paid = total_paid // max(len(year_data), 1)
+    total_count = sum(d['count'] for d in year_data.values())
+    return {'year': year_sorted, 'top5': top5, 'total_paid': total_paid, 'avg_paid': avg_paid, 'total_count': total_count}
 
 def calc_visits(records):
     """질병코드별 고유 방문일 계산 (약국 제외)"""
@@ -379,6 +415,169 @@ def analyze(api_key, customer_name, structured, all_text):
     return json.loads(raw)
 
 # ===== 렌더링 =====
+
+def make_pdf_summary(r, customer_name, today_str, cost_stats):
+    """고객용 요약본 PDF 생성"""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
+    from reportlab.lib import colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import os
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+        rightMargin=15*mm, leftMargin=15*mm,
+        topMargin=15*mm, bottomMargin=15*mm)
+
+    fn = 'Helvetica'
+    font_paths = [
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        'C:/Windows/Fonts/malgun.ttf',
+    ]
+    for fp in font_paths:
+        try:
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont('K', fp))
+                fn = 'K'; break
+        except: pass
+    if fn == 'Helvetica':
+        try:
+            import urllib.request, tempfile
+            url = 'https://github.com/googlefonts/nanum-fonts/raw/main/NanumGothic/NanumGothic-Regular.ttf'
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
+            urllib.request.urlretrieve(url, tmp.name)
+            pdfmetrics.registerFont(TTFont('K', tmp.name))
+            fn = 'K'
+        except: pass
+
+    def ps(n, sz, c='#1a2744', sb=0, sa=3):
+        return ParagraphStyle(n, fontName=fn, fontSize=sz,
+            textColor=colors.HexColor(c), spaceBefore=sb, spaceAfter=sa)
+
+    story = []
+    i1=r.get('item1',{}); i2=r.get('item2',{}); i3=r.get('item3',{})
+    i4=r.get('item4',{}); i5=r.get('item5',{}); signal=r.get('signal',{})
+    summary=r.get('요약',[])
+
+    sig = signal.get('status','green')
+    sig_t = {'red':'인수 거절 가능성','yellow':'조건부 가입 가능','green':'일반심사 가능'}.get(sig,'일반심사 가능')
+
+    def row(txt, c='#374151', sz=10, sb=0, sa=2):
+        story.append(Paragraph(txt, ps('r', sz, c, sb, sa)))
+    def sec(title, sb=8):
+        story.append(Paragraph(title, ps('h', 12, '#1a2744', sb, 4)))
+        story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e5e7eb'), spaceAfter=4))
+    def none_row():
+        story.append(Paragraph('해당 없음', ps('n', 10, '#16a34a', 0, 4)))
+
+    # 헤더
+    story.append(Paragraph(f'알릴 의무 고지사항 확인서', ps('t', 18, '#1a2744', 0, 3)))
+    story.append(Paragraph(f'{customer_name} 고객님   |   분석일: {today_str}   |   {sig_t}', ps('s', 10, '#6b7280', 0, 6)))
+    story.append(HRFlowable(width="100%", thickness=3, color=colors.HexColor('#1a2744'), spaceAfter=10))
+
+    # 1번 - 3개월
+    has1 = any(i1.get(k,{}).get('해당') for k in ["질병확정진단","질병의심소견","치료","입원","수술","투약"])
+    sec("1. 최근 3개월 이내 의료행위")
+    if has1:
+        for key in ["질병확정진단","치료","수술","투약"]:
+            data = i1.get(key,{})
+            if not data.get('해당'): continue
+            for item in data.get('목록',[]):
+                if key == "투약":
+                    row(f'  · {item.get("약품명","")} — {item.get("용도","")} — {item.get("투약일수",0)}일', '#dc2626')
+                elif key == "수술":
+                    row(f'  · {item.get("수술명","")} — {item.get("날짜","")}', '#dc2626')
+                else:
+                    row(f'  · {item.get("질병","")} ({item.get("코드","")}) — {item.get("날짜","")} — {item.get("병원","")}', '#dc2626')
+    else:
+        none_row()
+
+    # 2번
+    has2 = any(i2.get(k,{}).get('해당') for k in ["마약성진통제","혈압강하제","신경안정제","수면제"])
+    sec("2. 최근 3개월 약물 상시복용", 6)
+    if has2:
+        for key in ["마약성진통제","혈압강하제","신경안정제","수면제","각성제","진통제"]:
+            data = i2.get(key,{})
+            if not data.get('해당'): continue
+            for item in data.get('목록',[]):
+                row(f'  · {item.get("약물명","")} ({item.get("성분명","")}) — {"복용 중" if item.get("복용중") else "과거 복용"}', '#dc2626')
+    else:
+        none_row()
+
+    # 3번
+    sec("3. 최근 1년 이내 재검사/추가검사", 6)
+    if i3.get('해당'):
+        for d in i3.get('목록',[]):
+            row(f'  · {d.get("질병","")} ({d.get("코드","")}) — {d.get("총방문횟수",0)}회 — {d.get("검사내용","")}', '#dc2626')
+    else:
+        none_row()
+
+    # 4번 - 카테고리별
+    sec("4. 최근 5년 이내 의료행위", 6)
+    cats = [
+        ("입원", i4.get('입원',{})),
+        ("수술 (제왕절개 포함)", i4.get('수술',{})),
+        ("계속하여 7일 이상 치료", i4.get('치료7일',{})),
+        ("계속하여 30일 이상 투약", i4.get('투약30일',{})),
+    ]
+    for cat_name, data in cats:
+        has = data.get('해당', False)
+        if has:
+            row(f'  [{cat_name}]', '#991b1b', 10, 2, 1)
+            for item in data.get('목록', []):
+                if not isinstance(item, dict): continue
+                if '수술' in cat_name:
+                    row(f'    · {item.get("수술명","")} — {item.get("날짜","")} — {item.get("병원","")}', '#dc2626')
+                elif '투약' in cat_name:
+                    row(f'    · {item.get("약품명","")} ({item.get("성분명","")}) — 합계 {item.get("합산일수",0)}일', '#dc2626')
+                elif '입원' in cat_name:
+                    row(f'    · {item.get("질병","")} — {item.get("입원일","")}~{item.get("퇴원일","")} — {item.get("일수",0)}일', '#dc2626')
+                else:
+                    row(f'    · {item.get("질병","")} ({item.get("코드","")}) — {item.get("총방문횟수",0)}회', '#dc2626')
+        else:
+            row(f'  [{cat_name}] 해당 없음', '#16a34a', 10, 2, 1)
+
+    # 5번
+    sec("5. 최근 5년 이내 10대 질병", 6)
+    diseases_5=['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']
+    d5map=i5.get('목록',{})
+    bad=[d for d in diseases_5 if '해당없음' not in str(d5map.get(d,'해당없음')) and '없음' not in str(d5map.get(d,'해당없음'))]
+    ok=[d for d in diseases_5 if d not in bad]
+    if bad: row(f'  해당 있음: {", ".join(bad)}', '#dc2626')
+    row(f'  해당 없음: {", ".join(ok)}', '#16a34a')
+
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#e5e7eb'), spaceBefore=10, spaceAfter=6))
+
+    # 의료비 섹션
+    if cost_stats:
+        sec("6. 연도별 본인부담 의료비", 4)
+        row(f'  총 본인부담금: {cost_stats["total_paid"]:,}원   |   연평균: {cost_stats["avg_paid"]:,}원   |   총 진료: {cost_stats["total_count"]}건', '#1a2744', 10, 0, 4)
+        for y, d in cost_stats['year'].items():
+            row(f'  {y}년  {d["count"]}건  →  본인부담 {d["paid"]:,}원  (보험혜택 {d["ins"]:,}원)', '#374151', 10, 0, 2)
+
+        story.append(Spacer(1, 4*mm))
+        sec("7. 질병별 의료비 상위 5개", 4)
+        for i, (name, d) in enumerate(cost_stats['top5']):
+            row(f'  {i+1}. {name} ({d["code"]})  {d["count"]}회  →  {d["paid"]:,}원', '#374151', 10, 0, 2)
+
+    # 요약
+    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#c9a84c'), spaceBefore=10, spaceAfter=6))
+    story.append(Paragraph('고지 필요 핵심 요약', ps('sh', 12, '#1a2744', 0, 5)))
+    for s in summary:
+        row(f'  ▶ {s}', '#1a2744', 10, 0, 3)
+
+    story.append(Spacer(1, 6*mm))
+    story.append(Paragraph('본 자료는 심평원 기본진료정보를 기반으로 AI가 분석한 참고용 자료입니다.   리치앤아이 · 글로벌금융판매',
+        ps('f', 8, '#9ca3af', 0, 0)))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
 def render(r, customer_name, today_str):
     i1=r.get('item1',{}); i2=r.get('item2',{})
     i3=r.get('item3',{}); i4=r.get('item4',{})
@@ -573,6 +772,63 @@ def render(r, customer_name, today_str):
         </div>""", unsafe_allow_html=True)
 
 
+
+def render_cost(stats):
+    """연도별/질병별 의료비 렌더링"""
+    if not stats: return
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    year_data = stats['year']
+    top5 = stats['top5']
+    total_paid = stats['total_paid']
+    avg_paid = stats['avg_paid']
+    total_count = stats['total_count']
+
+    # 요약 박스
+    st.markdown(f"""
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;">
+        <div class="stat-box"><div class="stat-label">총 본인부담금</div><div class="stat-value">{total_paid:,}원</div></div>
+        <div class="stat-box"><div class="stat-label">연평균 본인부담금</div><div class="stat-value stat-blue">{avg_paid:,}원</div></div>
+        <div class="stat-box"><div class="stat-label">총 진료 건수</div><div class="stat-value">{total_count}건</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown('<div class="sec-title"><span class="sec-num">6</span>연도별 본인부담 의료비</div>', unsafe_allow_html=True)
+        for y, d in year_data.items():
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border:1px solid #e8eaf0;border-radius:10px;margin-bottom:8px;background:white;">
+                <div>
+                    <div style="font-size:15px;font-weight:800;color:#1a2744;">{y}년</div>
+                    <div style="font-size:12px;color:#9ca3af;margin-top:2px;">{d['count']}건 진료</div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="font-size:16px;font-weight:900;color:#1D9E75;">{d['paid']:,}원</div>
+                    <div style="font-size:11px;color:#9ca3af;">보험혜택 {d['ins']:,}원</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown('<div class="sec-title"><span class="sec-num">7</span>질병별 의료비 상위 5개</div>', unsafe_allow_html=True)
+        colors = ['#E24B4A','#378ADD','#1D9E75','#BA7517','#534AB7']
+        for i, (name, d) in enumerate(top5):
+            c = colors[i % len(colors)]
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border:1px solid #e8eaf0;border-radius:10px;margin-bottom:8px;background:white;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="width:22px;height:22px;border-radius:50%;background:{c};color:white;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0;">{i+1}</div>
+                    <div>
+                        <div style="font-size:13px;font-weight:800;color:#1a2744;">{name}</div>
+                        <div style="font-size:11px;color:#9ca3af;">{d['code']} · {d['count']}회</div>
+                    </div>
+                </div>
+                <div style="font-size:15px;font-weight:900;color:#1a2744;">{d['paid']:,}원</div>
+            </div>
+            """, unsafe_allow_html=True)
+
 def make_pdf(r, customer_name, today_str):
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
@@ -587,11 +843,32 @@ def make_pdf(r, customer_name, today_str):
     doc=SimpleDocTemplate(buf,pagesize=A4,rightMargin=15*mm,leftMargin=15*mm,topMargin=15*mm,bottomMargin=15*mm)
 
     fn='Helvetica'
-    for fp in ['/usr/share/fonts/truetype/nanum/NanumGothic.ttf','C:/Windows/Fonts/malgun.ttf']:
+    # 한글 폰트 다운로드 및 등록 (Streamlit Cloud 환경)
+    import urllib.request, tempfile
+    font_paths = [
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        'C:/Windows/Fonts/malgun.ttf',
+        'C:/Windows/Fonts/NanumGothic.ttf',
+    ]
+    for fp in font_paths:
         try:
             if os.path.exists(fp):
-                pdfmetrics.registerFont(TTFont('K',fp)); fn='K'; break
+                pdfmetrics.registerFont(TTFont('K', fp))
+                fn = 'K'
+                break
         except: pass
+    
+    # 위에서 못 찾으면 웹에서 다운로드
+    if fn == 'Helvetica':
+        try:
+            url = 'https://github.com/googlefonts/nanum-fonts/raw/main/NanumGothic/NanumGothic-Regular.ttf'
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
+            urllib.request.urlretrieve(url, tmp.name)
+            pdfmetrics.registerFont(TTFont('K', tmp.name))
+            fn = 'K'
+        except:
+            pass
 
     def ps(n,sz,c='#1a2744',sb=0,sa=3):
         return ParagraphStyle(n,fontName=fn,fontSize=sz,textColor=colors.HexColor(c),spaceBefore=sb,spaceAfter=sa)
@@ -680,6 +957,8 @@ def make_pdf(r, customer_name, today_str):
 if 'result' not in st.session_state: st.session_state.result=None
 if 'customer' not in st.session_state: st.session_state.customer=""
 if 'today_str' not in st.session_state: st.session_state.today_str=""
+if 'basic_records' not in st.session_state: st.session_state.basic_records=[]
+if 'cost_stats' not in st.session_state: st.session_state.cost_stats=None
 
 with st.sidebar:
     st.markdown("### ⚙️ 설정")
@@ -698,10 +977,17 @@ with st.sidebar:
         st.markdown("### 💾 PDF 저장")
         try:
             pb=make_pdf(st.session_state.result,st.session_state.customer,st.session_state.today_str)
-            st.download_button("📄 PDF로 저장",data=pb,
-                file_name=f"고지사항_{st.session_state.customer}_{date.today().strftime('%Y%m%d')}.pdf",
+            st.download_button("📋 전체 상세 보고서",data=pb,
+                file_name=f"상세보고서_{st.session_state.customer}_{date.today().strftime('%Y%m%d')}.pdf",
                 mime="application/pdf",use_container_width=True)
         except Exception as e: st.error(f"PDF 오류: {e}")
+        try:
+            cost=st.session_state.cost_stats
+            pb2=make_pdf_summary(st.session_state.result,st.session_state.customer,st.session_state.today_str,cost)
+            st.download_button("👤 고객용 요약본",data=pb2,
+                file_name=f"고객요약_{st.session_state.customer}_{date.today().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",use_container_width=True)
+        except Exception as e: st.error(f"요약본 오류: {e}")
 
 if btn:
     if not api_key.startswith('sk-ant-'):
@@ -786,6 +1072,8 @@ if btn:
                 st.session_state.result=result
                 st.session_state.customer=customer_name
                 st.session_state.today_str=today_str
+                st.session_state.basic_records=basic
+                st.session_state.cost_stats=calc_cost_stats(basic)
                 st.rerun()
             except json.JSONDecodeError:
                 st.error("JSON 파싱 오류. 다시 시도해주세요.")
@@ -794,6 +1082,9 @@ if btn:
 
 if st.session_state.result:
     render(st.session_state.result,st.session_state.customer,st.session_state.today_str)
+    # 의료비 탭
+    if st.session_state.cost_stats:
+        render_cost(st.session_state.cost_stats)
 else:
     st.info("왼쪽에서 API 키, 고객 이름, PDF 업로드 후 분석 버튼을 눌러주세요.")
     st.markdown("""
