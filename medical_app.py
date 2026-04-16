@@ -21,8 +21,9 @@ def get_url_params():
         params = st.query_params
         uid = params.get('uid', '')
         cid = params.get('cid', '')
-        return uid, cid
-    except: return '', ''
+        name = params.get('name', '')
+        return uid, cid, name
+    except: return '', '', ''
 
 # ===== Firestore 저장 함수 =====
 def save_to_firestore(uid, cid, result, customer_name, today_str, cost_stats=None):
@@ -1013,11 +1014,11 @@ with st.sidebar:
     api_key=st.text_input("Claude API Key",type="password",placeholder="sk-ant-...")
 
     # URL 파라미터에서 고객 정보 읽기
-    url_uid, url_cid = get_url_params()
+    url_uid, url_cid, url_name = get_url_params()
     if url_uid and url_cid:
         st.markdown('<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:6px;padding:6px 10px;font-size:12px;color:#166534;margin-bottom:4px;">✅ 리치앤아이 고객 연동됨</div>', unsafe_allow_html=True)
 
-    customer_name=st.text_input("고객 이름",placeholder="홍길동")
+    customer_name=st.text_input("고객 이름", value=url_name if url_name else "", placeholder="홍길동")
     st.markdown("### 📄 PDF 업로드")
     pdf_b=st.file_uploader("📋 기본진료정보",type="pdf",key="p1")
     pdf_d=st.file_uploader("🔬 세부진료정보",type="pdf",key="p2")
