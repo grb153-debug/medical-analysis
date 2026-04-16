@@ -482,25 +482,22 @@ def make_pdf_summary(r, customer_name, today_str, cost_stats):
         topMargin=15*mm, bottomMargin=15*mm)
 
     fn = 'Helvetica'
+    import os as _os
+    # 폰트 경로 우선순위: 레포 내 폰트 → 시스템 폰트
+    _base = _os.path.dirname(_os.path.abspath(__file__))
     font_paths = [
+        _os.path.join(_base, 'NanumGothic.ttf'),
+        _os.path.join(_base, 'fonts', 'NanumGothic.ttf'),
         '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
         '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
         'C:/Windows/Fonts/malgun.ttf',
+        'C:/Windows/Fonts/NanumGothic.ttf',
     ]
     for fp in font_paths:
         try:
-            if os.path.exists(fp):
+            if _os.path.exists(fp):
                 pdfmetrics.registerFont(TTFont('K', fp))
                 fn = 'K'; break
-        except: pass
-    if fn == 'Helvetica':
-        try:
-            import urllib.request, tempfile
-            url = 'https://github.com/googlefonts/nanum-fonts/raw/main/NanumGothic/NanumGothic-Regular.ttf'
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
-            urllib.request.urlretrieve(url, tmp.name)
-            pdfmetrics.registerFont(TTFont('K', tmp.name))
-            fn = 'K'
         except: pass
 
     def ps(n, sz, c='#1a2744', sb=0, sa=3):
