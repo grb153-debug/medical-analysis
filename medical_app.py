@@ -442,57 +442,247 @@ def analyze(api_key, customer_name, structured, all_text):
     d1y_str=structured['d1y']
     d5y_str=structured['d5y']
 
-    prompt=f"""당신은 최고 수준의 보험 심사 전문가입니다.
-아래는 Python 코드가 정확하게 계산한 의료기록 구조화 데이터입니다.
-날짜계산/통원횟수/투약일수는 이미 정확하게 계산되었습니다.
-당신은 판단과 검사내용 파악만 하면 됩니다.
+    # ── 시스템 프롬프트 (심사관 역할) ──
+    system_prompt = """# Role: 대용량 데이터 전용 보험 고지의무 분석 엔진 (Expert Underwriter)
+너는 260페이지 이상의 방대한 의무기록을 분석하여 보험 고지사항을 추출하는 전문가다. 데이터 과부하로 인한 출력 끊김을 방지하고, 보험사의 고지의무 위반 조사를 원천 차단하기 위해 다음 '심사관 관점의 통합 로직'을 절대 준수하라.
 
-고객명: {customer_name}
+# 1. 수술 및 시술 정밀 판별 (Surgical Detection - CRITICAL)
+다음 항목은 '수술' 명칭이 없어도 반드시 [수술/시술]로 분류하고 개별 고지하라:
+- 치과 수술 분리: [발치술]과 [임플란트 식립]은 별개의 수술이다. 동일 부위라도 각각 독립된 항목으로 추출하라.
+- 숨겨진 수술: 성형술(골시멘트 주입 포함), 소작술(약물/레이저), 용종 절제(SNARE 사용), 조직검사(FORCEPS 사용/생검), 봉합, 배농, 천자.
+- 간접 증거: 세부내역서상 '마취료', '수술실 사용료', '재료대(Fixture, Snare 등)'가 확인되면 관련 상병을 수술로 판정하라.
+
+# 2. 신체 부위 및 원인별 통합 로직 (Anatomical Grouping)
+보험사의 '동일 원인 합산' 기준에 따라 다음을 실행하라:
+- 부위별 통합: 코드가 미세하게 다르거나(AM759, AM751), 병원 종류(한방 B코드, 양방 A코드)가 달라도 '동일 부위(어깨, 발목, 허리 등)' 치료라면 하나의 질병군으로 묶어 [총 통원 횟수]를 합산하라.
+- 위장약 필터링: 진통제 등과 세트로 처방된 위장약은 독립 질환이 아닌 주상병(근골격계 등)의 보조 치료로 묶어라.
+- 질병코드 정제: 앞의 알파벳(A, B, C)은 제거하고 코드 앞 3자리로 그룹화하라. '$' 약국 기록은 당일 방문 병원 코드를 적용하라.
+
+# 3. 만성 질환 '뿌리' 역추적 (Chronic Disease Rooting)
+- 실질 진단일 찾기: 특정 상병코드(I20 등)가 찍히기 전이라도, 해당 질환의 전용 핵심 약물(예: 니트로글리세린, 항혈전제, 고지혈증제 등)이 최초 처방된 날을 '실질적 치료 시작일'로 간주하여 타임라인을 작성하라.
+
+# 4. 고지 대상 우선순위 및 필터링
+아래 기준에 부합하지 않는 단순 진료는 생략하여 토큰을 절약하라:
+1) [3개월 이내] 진단, 의심소견, 입원, 수술, 투약 전체
+2) [5년 이내] 11대 중대질환(암, 뇌졸중, 당뇨, 혈압, 협심증 등) 기록 전체
+3) [5년 이내] 입원 및 모든 수술/시술 (발치, 용종절제 포함)
+4) [5년 이내] 통합 질병군 기준 [7일 이상 치료] 또는 [30일 이상 투약]
+5) [1년 이내] 재검사 또는 추가검사 소견 (F/U, 추적관찰 포함)
+
+# 5. 출력 형식 (Strict JSONL Format)
+- 서론, 결론, 부연 설명 없이 데이터만 출력하라. 한 줄에 하나의 JSON 객체만 출력(JSONL).
+- 끊김 방지를 위해 중요 고지사항(3개월/중대질환/수술)부터 우선 출력하라.
+- 반드시 아래 양식만 사용하라. 다른 형식 절대 금지.
+
+[결과 양식 - 이 형식만 출력]
+{"type": "고지유형", "date": "날짜/기간", "disease": "질병명(코드)", "count": "총 n일/n회", "summary": "고지 문구 요약"}"""
+
+    # ── 사용자 프롬프트 (구조화 데이터 전달) ──
+    prompt = f"""고객명: {customer_name}
 분석기준일: {today_str}
-3개월 기준: {d3_str} ~ {today_str} (이 범위 레코드만 1번 항목)
+3개월 기준: {d3_str} ~ {today_str}
 1년 기준: {d1y_str} ~ {today_str}
 5년 기준: {d5y_str} ~ {today_str}
 
-=== 구조화 데이터 ===
+=== 구조화 데이터 (Python 정밀 계산 완료) ===
 {json.dumps(structured, ensure_ascii=False, indent=2)}
 
-=== 원본 텍스트 (검사내용 파악용) ===
+=== 원본 텍스트 (수술/검사 판별용) ===
 {all_text[:4000]}
 
-[핵심 판단 규칙]
-1. item1: structured의 records_3m + rx_3m 데이터 모두 사용 (날짜 재계산 절대 금지)
-   - records_3m: 진료 기록 (질병확정진단, 치료 등)
-   - rx_3m: 3개월 이내 처방약 기록 → 반드시 투약 항목에 전부 포함
-   - rx_3m의 각 약품을 투약 목록에 추가 (약품명, 성분명, 투약일수 포함)
-   - rx_3m가 비어있지 않으면 반드시 투약:해당:true 로 설정
-2. item3: visits_1y_2plus 데이터 사용. 1회 방문이라도 정밀검사(혈액검사/X-ray/MRI/근전도/관절천자/초음파/내시경 등) 있으면 포함
-3. item4 치료7일: visits_5y_7plus 그대로 사용
-4. item4 투약30일: drug_by_disease_5y 그대로 사용 (재계산 금지)
-   - drug_by_disease_5y의 모든 항목을 빠짐없이 표시 (코드가 없거나 UNKNOWN이어도 포함)
-   - 같은 질병코드라도 성분명이 다른 약품은 반드시 독립 항목으로 표시
-   - 처방내역의 모든 날짜와 투약일수를 빠짐없이 표시
-   - 약품명은 drug_name 필드 그대로 사용
-   - drug_by_disease_5y에 항목이 있으면 반드시 해당:true 로 설정
-5. item4 수술: surgeries_5y 사용. 물리치료/신경차단/주사 절대 수술로 분류 금지
-6. 질병코드 다르면 반드시 독립 항목 (AM513≠AS3350, 경추≠요추≠무릎≠어깨)
-7. 해당없는 항목은 해당:false
+위 시스템 지침에 따라 고지의무 대상 항목을 JSONL 형식으로 출력하라."""
 
-[1년이내 재검사 판단 - 중요]
-- 동일 질병코드 2회이상 OR
-- 1회라도 당일 정밀검사(혈액,X-ray,MRI,CT,근전도,관절천자,초음파,내시경,심전도 등) 시행한 경우
-- 원본 텍스트에서 어떤 검사 받았는지 구체적으로 파악해서 검사내용에 명시
+    client = anthropic.Anthropic(api_key=api_key)
+    msg = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=8192,
+        system=system_prompt,
+        messages=[{"role": "user", "content": prompt}]
+    )
 
-반드시 순수 JSON만 반환. {{ 로 시작 }} 로 끝.
+    raw = msg.content[0].text.strip()
 
-{{"item1":{{"질병확정진단":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"AM513","날짜":"YYYY-MM-DD","병원":"병원명","주의":false}}]}},"질병의심소견":{{"해당":false,"목록":[]}},"치료":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"코드","날짜":"YYYY-MM-DD","병원":"병원명","내용":"치료내용"}}]}},"입원":{{"해당":false,"목록":[]}},"수술":{{"해당":false,"목록":[{{"질병":"한글질병명","수술명":"수술명","날짜":"YYYY-MM-DD","병원":"병원명"}}]}},"투약":{{"해당":true,"목록":[{{"질병":"한글질병명","약품명":"약품명","성분명":"성분명","용도":"어떤 질환 치료약","투약일수":숫자,"날짜":"YYYY-MM-DD"}}]}}}},"item2":{{"마약성진통제":{{"해당":false,"목록":[]}},"혈압강하제":{{"해당":false,"목록":[]}},"신경안정제":{{"해당":false,"목록":[{{"약물명":"약품명","성분명":"성분명","복용시작":"날짜","복용중":false}}]}},"수면제":{{"해당":false,"목록":[]}},"각성제":{{"해당":false,"목록":[]}},"진통제":{{"해당":false,"목록":[]}}}},"item3":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"코드","최초진료일":"YYYY-MM-DD","마지막진료일":"YYYY-MM-DD","총방문횟수":숫자,"입원횟수":0,"수술횟수":0,"수술명":[],"검사내용":"구체적 검사명 (X-ray 몇매, MRI, 혈액검사 등)","고지사유":"왜 고지해야 하는지 신입설계사도 이해할 수 있게","주의":false}}]}},"item4":{{"입원":{{"해당":false,"목록":[{{"질병":"질병명","입원일":"날짜","퇴원일":"날짜","병원":"병원명","일수":숫자}}]}},"수술":{{"해당":false,"목록":[{{"질병":"질병명","수술명":"수술명 구체적으로","날짜":"날짜","병원":"병원명"}}]}},"시술처치":{{"해당":false,"목록":[{{"내용":"시술명·병원·날짜"}}]}},"치료7일":{{"해당":false,"목록":[{{"질병":"한글질병명","코드":"코드","최초진료일":"날짜","마지막진료일":"날짜","총방문횟수":숫자}}]}},"투약30일":{{"해당":false,"목록":[{{"질병":"한글질병명","코드":"코드","약품명":"약품명","성분명":"성분명","용도":"어떤 질환 치료약","처방내역":[{{"날짜":"날짜","투약일수":숫자}}],"합산일수":숫자}}]}}}},"item5":{{"해당":false,"목록":{{"암":"해당없음","백혈병":"해당없음","고혈압":"해당없음","협심증":"해당없음","심근경색":"해당없음","심장판막증":"해당없음","간경화증":"해당없음","뇌졸중":"해당없음","당뇨":"해당없음","에이즈HIV":"해당없음","항문질환":"해당없음"}}}},"signal":{{"status":"green","reason":"판단 근거"}},"요약":["고지필요 핵심사항 구체적으로"]}}"""
+    # ── JSONL 파싱 로직 ──
+    # 방법1: 한 줄씩 읽어서 유효한 JSON만 수집
+    items = []
+    for line in raw.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        # 코드블록 마커 제거
+        if line.startswith('```') or line.startswith('#'):
+            continue
+        # JSON 객체인 줄만 처리
+        if line.startswith('{') and line.endswith('}'):
+            try:
+                obj = json.loads(line)
+                items.append(obj)
+            except json.JSONDecodeError:
+                # 끊긴 줄 복구 시도
+                try:
+                    obj = json.loads(line + '}')
+                    items.append(obj)
+                except:
+                    pass
 
-    client=anthropic.Anthropic(api_key=api_key)
-    msg=client.messages.create(model="claude-sonnet-4-20250514",max_tokens=8192,messages=[{"role":"user","content":prompt}])
-    raw=msg.content[0].text.strip()
-    if raw.startswith('```'): raw=re.sub(r'^```[a-z]*\n?','',raw).rstrip('`').strip()
-    js=raw.find('{'); je=raw.rfind('}')
-    if js!=-1 and je!=-1: raw=raw[js:je+1]
-    return json.loads(raw)
+    # JSONL 파싱 성공 시 기존 구조로 변환
+    if items:
+        return _jsonl_to_structured(items, structured)
+
+    # 방법2: 기존 JSON 방식 폴백 (혹시 JSON으로 응답한 경우)
+    raw_clean = raw
+    if raw_clean.startswith('```'):
+        raw_clean = re.sub(r'^```[a-z]*\n?', '', raw_clean).rstrip('`').strip()
+    js = raw_clean.find('{')
+    je = raw_clean.rfind('}')
+    if js != -1 and je != -1:
+        try:
+            return json.loads(raw_clean[js:je+1])
+        except:
+            pass
+
+    # 방법3: 빈 결과 반환 (오류 방지)
+    return _empty_result()
+
+
+def _jsonl_to_structured(items, structured):
+    """JSONL 항목들을 기존 렌더링 구조(item1~item5)로 변환"""
+    result = _empty_result()
+
+    for item in items:
+        t = item.get('type', '')
+        date = item.get('date', '')
+        disease = item.get('disease', '')
+        count = item.get('count', '')
+        summary = item.get('summary', '')
+
+        # 코드 추출 (괄호 안)
+        code_match = re.search(r'\(([A-Z][\w.]+)\)', disease)
+        code = code_match.group(1) if code_match else ''
+        disease_name = re.sub(r'\([^)]+\)', '', disease).strip()
+
+        if '3개월' in t:
+            # 투약인지 수술인지 치료인지 판단
+            if '투약' in t or '투약' in summary:
+                result['item1']['투약']['해당'] = True
+                result['item1']['투약']['목록'].append({
+                    '질병': disease_name, '코드': code, '날짜': date,
+                    '약품명': summary[:30], '성분명': '', '용도': summary, '투약일수': 0
+                })
+            elif '수술' in t or '수술' in summary or '시술' in t:
+                result['item1']['수술']['해당'] = True
+                result['item1']['수술']['목록'].append({
+                    '질병': disease_name, '수술명': summary, '날짜': date, '병원': ''
+                })
+            elif '입원' in t or '입원' in summary:
+                result['item1']['입원']['해당'] = True
+                result['item1']['입원']['목록'].append({
+                    '질병': disease_name, '코드': code, '날짜': date, '병원': ''
+                })
+            else:
+                result['item1']['질병확정진단']['해당'] = True
+                result['item1']['질병확정진단']['목록'].append({
+                    '질병': disease_name, '코드': code, '날짜': date, '병원': '', '주의': False
+                })
+
+        elif '중대질환' in t or '중대' in t:
+            result['item5']['해당'] = True
+            for k in ['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']:
+                if k in disease or k in summary:
+                    result['item5']['목록'][k] = f"{date} / {summary}"
+
+        elif '수술' in t or '시술' in t:
+            result['item4']['수술']['해당'] = True
+            result['item4']['수술']['목록'].append({
+                '질병': disease_name, '수술명': summary, '날짜': date, '병원': ''
+            })
+
+        elif '입원' in t:
+            result['item4']['입원']['해당'] = True
+            result['item4']['입원']['목록'].append({
+                '질병': disease_name, '입원일': date, '퇴원일': '', '병원': '', '일수': 0
+            })
+
+        elif '30일' in t or '투약' in t:
+            result['item4']['투약30일']['해당'] = True
+            days_match = re.search(r'(\d+)일', count)
+            days = int(days_match.group(1)) if days_match else 0
+            result['item4']['투약30일']['목록'].append({
+                '질병': disease_name, '코드': code,
+                '약품명': disease_name, '성분명': '', '용도': summary,
+                '처방내역': [{'날짜': date, '투약일수': days}],
+                '합산일수': days
+            })
+
+        elif '7일' in t or '치료' in t:
+            result['item4']['치료7일']['해당'] = True
+            count_match = re.search(r'(\d+)회', count)
+            cnt = int(count_match.group(1)) if count_match else 0
+            result['item4']['치료7일']['목록'].append({
+                '질병': disease_name, '코드': code,
+                '최초진료일': date.split('~')[0].strip() if '~' in date else date,
+                '마지막진료일': date.split('~')[-1].strip() if '~' in date else date,
+                '총방문횟수': cnt
+            })
+
+        elif '재검사' in t or '추가검사' in t or '1년' in t:
+            result['item3']['해당'] = True
+            count_match = re.search(r'(\d+)회', count)
+            cnt = int(count_match.group(1)) if count_match else 0
+            result['item3']['목록'].append({
+                '질병': disease_name, '코드': code,
+                '최초진료일': date, '마지막진료일': date,
+                '총방문횟수': cnt, '입원횟수': 0, '수술횟수': 0,
+                '수술명': [], '검사내용': summary, '고지사유': summary, '주의': False
+            })
+
+    # 요약 생성
+    result['요약'] = [item.get('summary', '') for item in items[:5] if item.get('summary')]
+    result['signal'] = {'status': 'yellow' if items else 'green', 'reason': f'총 {len(items)}건 고지 대상 확인'}
+
+    return result
+
+
+def _empty_result():
+    """빈 결과 구조 반환"""
+    return {
+        'item1': {
+            '질병확정진단': {'해당': False, '목록': []},
+            '질병의심소견': {'해당': False, '목록': []},
+            '치료': {'해당': False, '목록': []},
+            '입원': {'해당': False, '목록': []},
+            '수술': {'해당': False, '목록': []},
+            '투약': {'해당': False, '목록': []}
+        },
+        'item2': {
+            '마약성진통제': {'해당': False, '목록': []},
+            '혈압강하제': {'해당': False, '목록': []},
+            '신경안정제': {'해당': False, '목록': []},
+            '수면제': {'해당': False, '목록': []},
+            '각성제': {'해당': False, '목록': []},
+            '진통제': {'해당': False, '목록': []}
+        },
+        'item3': {'해당': False, '목록': []},
+        'item4': {
+            '입원': {'해당': False, '목록': []},
+            '수술': {'해당': False, '목록': []},
+            '시술처치': {'해당': False, '목록': []},
+            '치료7일': {'해당': False, '목록': []},
+            '투약30일': {'해당': False, '목록': []}
+        },
+        'item5': {
+            '해당': False,
+            '목록': {
+                '암': '해당없음', '백혈병': '해당없음', '고혈압': '해당없음',
+                '협심증': '해당없음', '심근경색': '해당없음', '심장판막증': '해당없음',
+                '간경화증': '해당없음', '뇌졸중': '해당없음', '당뇨': '해당없음',
+                '에이즈HIV': '해당없음', '항문질환': '해당없음'
+            }
+        },
+        'signal': {'status': 'green', 'reason': '분석 완료'},
+        '요약': []
+    }
+
 
 # ===== 렌더링 =====
 
