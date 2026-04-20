@@ -152,17 +152,9 @@ DN = {
     'AA099':'위장염 및 결장염','AK291':'급성위염',
 }
 
-SURGERY_KW = [
-    # 기존 키워드 유지
-    '절제술','적출술','봉합술','발치술','임플란트식립','치조골절제','편도절제술',
+SURGERY_KW = ['절제술','적출술','봉합술','발치술','임플란트식립','치조골절제','편도절제술',
     '충수절제술','용종절제술','관절경','복강경','절개배농','낭종제거술','피부절제술',
-    '피판술','치핵절제술','자궁절제술','제왕절개','종양절제','산립종절개','피부양성종양적출',
-    
-    # [지점장님 전용 추가] 놓치기 쉬운 핵심 시술 키워드
-    '성형술', '고주파열치료', '소작술', '결찰술', '흡인술', '천자술', '생검', 
-    '박리술', '변연절제', '체외충격파쇄석술', '삽입술', '제거술', '치환술', 
-    '신경차단술', '도관삽입', '카테터', '스텐트', '풍선확장술', '동맥색전술'
-]
+    '피판술','치핵절제술','자궁절제술','제왕절개','종양절제','산립종절개','피부양성종양적출']
 NOT_SURGERY_KW = ['단순처치','염증성처치','드레싱','창상처치','신경차단','관절천자',
     '관절강내주사','히알루론산','스테로이드주사','물리치료','표층열','심층열',
     '초음파치료','전기자극','견인치료','스케일링','치주소파','치근활택',
@@ -386,30 +378,60 @@ def match_rx_to_disease(basic_records, rx_records, d5y, today):
     return matched
 
 def calc_drug_by_disease(matched_rx):
-    # 약 이름에서 잡다한 글자(정, 캡슐, 공백)를 다 지우고 글자만 비교
-    def clean_k(text): return re.sub(r'[^가-힣a-zA-Z0-9]', '', str(text or '')).lower()
+    """질병코드 + 성분명 기준으로 투약일수 합산"""
+    # 성분명 정규화 (소문자 첫 단어)
+    def norm_comp(comp):
+        if not comp: return ''
+        return comp.lower().split()[0] if comp.strip() else ''
 
-    groups = defaultdict(list)
+    # 처방조제 중복 제거: 같은 날 같은 성분이면 외래 우선
+    deduped = []
+    seen = {}
     for rx in matched_rx:
-        # 성분명 우선, 없으면 약 이름 앞 5글자로 묶음
-        key = clean_k(rx.get('component')) if rx.get('component') else clean_k(rx.get('drug_name'))[:5]
+        comp_key = norm_comp(rx.get('component','')) or rx.get('drug_name','').lower()[:15]
+        key = (rx['date'], comp_key)
+        rx_type = rx.get('rx_type','')
+        if key not in seen:
+            seen[key] = rx_type
+            deduped.append(rx)
+        elif '처방조제' in seen[key] and '외래' in rx_type:
+            deduped = [r for r in deduped if not (r['date']==rx['date'] and (norm_comp(r.get('component','')) or r.get('drug_name','').lower()[:15])==comp_key)]
+            deduped.append(rx)
+            seen[key] = rx_type
+
+    groups=defaultdict(list)
+    for rx in deduped:
+        comp_key=norm_comp(rx.get('component',''))
+        drug_key=rx.get('drug_name','').lower()[:15]
+        code=rx.get('code','') or 'UNKNOWN'
+        key=comp_key or drug_key
         groups[key].append(rx)
 
-    result = {}
-    for key, items in groups.items():
-        # 같은 날 중복 처방은 하루치만 계산 (정확한 합산)
-        date_map = {it['date']: it['days'] for it in items}
-        total = sum(date_map.values())
-        
-        # 20일 이상이면 누락 방지를 위해 AI에게 전달
-        if total >= 20: 
-            rep = items[0]
-            result[key] = {
-                'code': rep.get('code', ''),
-                'disease': rep.get('disease', '관련 질환 확인 필요'),
-                'drug_name': rep.get('drug_name', ''),
-                'total_days': total,
-                'prescriptions': [{'date':d, 'days':v} for d,v in sorted(date_map.items())]
+    result={}
+    for comp,items in groups.items():
+        # 같은 날 같은 성분 → 최대 일수만 (다른 날짜는 독립 합산)
+        date_max={}
+        code='UNKNOWN'
+        for item in items:
+            d=item['date']
+            if d not in date_max or item['days']>date_max[d]:
+                date_max[d]=item['days']
+            # 질병코드 있으면 우선 사용
+            if item.get('code') and item['code'] != 'UNKNOWN':
+                code = item['code']
+
+        total=sum(date_max.values())
+        if total>=30:
+            rep=items[0]
+            # UNKNOWN 코드면 약품명으로 대체
+            display_disease = rep.get('disease','') or rep.get('drug_name','')
+            result[f"{comp}"]={
+                'code': code if code != 'UNKNOWN' else '',
+                'disease': display_disease,
+                'drug_name':rep.get('drug_name',''),
+                'component':rep.get('component',''),
+                'total_days':total,
+                'prescriptions':[{'date':d,'days':days} for d,days in sorted(date_max.items())]
             }
     return result
 
@@ -420,287 +442,57 @@ def analyze(api_key, customer_name, structured, all_text):
     d1y_str=structured['d1y']
     d5y_str=structured['d5y']
 
-    # ── 시스템 프롬프트 (심사관 역할) ──
-    system_prompt = """# Role: 대용량 데이터 전용 보험 고지의무 분석 엔진 (Expert Underwriter)
-너는 260페이지 이상의 방대한 의무기록을 분석하여 보험 고지사항을 추출하는 전문가다. 데이터 과부하로 인한 출력 끊김을 방지하고, 보험사의 고지의무 위반 조사를 원천 차단하기 위해 다음 '심사관 관점의 통합 로직'을 절대 준수하라.
+    prompt=f"""당신은 최고 수준의 보험 심사 전문가입니다.
+아래는 Python 코드가 정확하게 계산한 의료기록 구조화 데이터입니다.
+날짜계산/통원횟수/투약일수는 이미 정확하게 계산되었습니다.
+당신은 판단과 검사내용 파악만 하면 됩니다.
 
-# 1. 수술 및 시술 정밀 판별 (Surgical Detection - CRITICAL)
-다음 항목은 '수술' 명칭이 없어도 반드시 [수술/시술]로 분류하고 개별 고지하라:
-- 치과 수술 분리: [발치술]과 [임플란트 식립]은 별개의 수술이다. 동일 부위라도 각각 독립된 항목으로 추출하라.
-- 숨겨진 수술: 성형술(골시멘트 주입 포함), 소작술(약물/레이저), 용종 절제(SNARE 사용), 조직검사(FORCEPS 사용/생검), 봉합, 배농, 천자.
-- 간접 증거: 세부내역서상 '마취료', '수술실 사용료', '재료대(Fixture, Snare 등)'가 확인되면 관련 상병을 수술로 판정하라.
-
-# 2. 신체 부위 및 원인별 통합 로직 (Anatomical Grouping)
-보험사의 '동일 원인 합산' 기준에 따라 다음을 실행하라:
-- 부위별 통합: 코드가 미세하게 다르거나(AM759, AM751), 병원 종류(한방 B코드, 양방 A코드)가 달라도 '동일 부위(어깨, 발목, 허리 등)' 치료라면 하나의 질병군으로 묶어 [총 통원 횟수]를 합산하라.
-- 위장약 필터링: 진통제 등과 세트로 처방된 위장약은 독립 질환이 아닌 주상병(근골격계 등)의 보조 치료로 묶어라.
-- 질병코드 정제: 앞의 알파벳(A, B, C)은 제거하고 코드 앞 3자리로 그룹화하라. '$' 약국 기록은 당일 방문 병원 코드를 적용하라.
-
-# 3. 만성 질환 '뿌리' 역추적 (Chronic Disease Rooting)
-- 실질 진단일 찾기: 특정 상병코드(I20 등)가 찍히기 전이라도, 해당 질환의 전용 핵심 약물(예: 니트로글리세린, 항혈전제, 고지혈증제 등)이 최초 처방된 날을 '실질적 치료 시작일'로 간주하여 타임라인을 작성하라.
-
-# 4. 고지 대상 우선순위 및 필터링
-아래 기준에 부합하지 않는 단순 진료는 생략하여 토큰을 절약하라:
-1) [3개월 이내] 진단, 의심소견, 입원, 수술, 투약 전체
-2) [5년 이내] 11대 중대질환(암, 뇌졸중, 당뇨, 혈압, 협심증 등) 기록 전체
-3) [5년 이내] 입원 및 모든 수술/시술 (발치, 용종절제 포함)
-4) [5년 이내] 통합 질병군 기준 [7일 이상 치료] 또는 [30일 이상 투약]
-5) [1년 이내] 재검사 또는 추가검사 소견 (F/U, 추적관찰 포함)
-
-# 5. 출력 형식 (Strict JSONL Format)
-- 서론, 결론, 부연 설명 없이 데이터만 출력하라. 한 줄에 하나의 JSON 객체만 출력(JSONL).
-- 끊김 방지를 위해 중요 고지사항(3개월/중대질환/수술)부터 우선 출력하라.
-- 반드시 아래 양식만 사용하라. 다른 형식 절대 금지.
-
-[결과 양식 - 이 형식만 출력]
-{"type": "고지유형", "date": "날짜/기간", "disease": "질병명(코드)", "count": "총 n일/n회", "summary": "고지 문구 요약"}"""
-
-    # ── 사용자 프롬프트 (구조화 데이터 전달) ──
-    prompt = f"""고객명: {customer_name}
+고객명: {customer_name}
 분석기준일: {today_str}
-3개월 기준: {d3_str} ~ {today_str}
+3개월 기준: {d3_str} ~ {today_str} (이 범위 레코드만 1번 항목)
 1년 기준: {d1y_str} ~ {today_str}
 5년 기준: {d5y_str} ~ {today_str}
 
-=== 구조화 데이터 (Python 정밀 계산 완료) ===
+=== 구조화 데이터 ===
 {json.dumps(structured, ensure_ascii=False, indent=2)}
 
-=== 원본 텍스트 (수술/검사 판별용) ===
-{all_text}
+=== 원본 텍스트 (검사내용 파악용) ===
+{all_text[:4000]}
 
-위 시스템 지침에 따라 고지의무 대상 항목을 JSONL 형식으로 출력하라."""
+[핵심 판단 규칙]
+1. item1: structured의 records_3m + rx_3m 데이터 모두 사용 (날짜 재계산 절대 금지)
+   - records_3m: 진료 기록 (질병확정진단, 치료 등)
+   - rx_3m: 3개월 이내 처방약 기록 → 반드시 투약 항목에 전부 포함
+   - rx_3m의 각 약품을 투약 목록에 추가 (약품명, 성분명, 투약일수 포함)
+   - rx_3m가 비어있지 않으면 반드시 투약:해당:true 로 설정
+2. item3: visits_1y_2plus 데이터 사용. 1회 방문이라도 정밀검사(혈액검사/X-ray/MRI/근전도/관절천자/초음파/내시경 등) 있으면 포함
+3. item4 치료7일: visits_5y_7plus 그대로 사용
+4. item4 투약30일: drug_by_disease_5y 그대로 사용 (재계산 금지)
+   - drug_by_disease_5y의 모든 항목을 빠짐없이 표시 (코드가 없거나 UNKNOWN이어도 포함)
+   - 같은 질병코드라도 성분명이 다른 약품은 반드시 독립 항목으로 표시
+   - 처방내역의 모든 날짜와 투약일수를 빠짐없이 표시
+   - 약품명은 drug_name 필드 그대로 사용
+   - drug_by_disease_5y에 항목이 있으면 반드시 해당:true 로 설정
+5. item4 수술: surgeries_5y 사용. 물리치료/신경차단/주사 절대 수술로 분류 금지
+6. 질병코드 다르면 반드시 독립 항목 (AM513≠AS3350, 경추≠요추≠무릎≠어깨)
+7. 해당없는 항목은 해당:false
 
-    client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8192,
-        system=system_prompt,
-        messages=[{"role": "user", "content": prompt}]
-    )
+[1년이내 재검사 판단 - 중요]
+- 동일 질병코드 2회이상 OR
+- 1회라도 당일 정밀검사(혈액,X-ray,MRI,CT,근전도,관절천자,초음파,내시경,심전도 등) 시행한 경우
+- 원본 텍스트에서 어떤 검사 받았는지 구체적으로 파악해서 검사내용에 명시
 
-    raw = msg.content[0].text.strip()
+반드시 순수 JSON만 반환. {{ 로 시작 }} 로 끝.
 
-    # ── JSONL 파싱 로직 ──
-    # 방법1: 한 줄씩 읽어서 유효한 JSON만 수집
-    items = []
-    for line in raw.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        # 코드블록 마커 제거
-        if line.startswith('```') or line.startswith('#'):
-            continue
-        # JSON 객체인 줄만 처리
-        if line.startswith('{') and line.endswith('}'):
-            try:
-                obj = json.loads(line)
-                items.append(obj)
-            except json.JSONDecodeError:
-                # 끊긴 줄 복구 시도
-                try:
-                    obj = json.loads(line + '}')
-                    items.append(obj)
-                except:
-                    pass
+{{"item1":{{"질병확정진단":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"AM513","날짜":"YYYY-MM-DD","병원":"병원명","주의":false}}]}},"질병의심소견":{{"해당":false,"목록":[]}},"치료":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"코드","날짜":"YYYY-MM-DD","병원":"병원명","내용":"치료내용"}}]}},"입원":{{"해당":false,"목록":[]}},"수술":{{"해당":false,"목록":[{{"질병":"한글질병명","수술명":"수술명","날짜":"YYYY-MM-DD","병원":"병원명"}}]}},"투약":{{"해당":true,"목록":[{{"질병":"한글질병명","약품명":"약품명","성분명":"성분명","용도":"어떤 질환 치료약","투약일수":숫자,"날짜":"YYYY-MM-DD"}}]}}}},"item2":{{"마약성진통제":{{"해당":false,"목록":[]}},"혈압강하제":{{"해당":false,"목록":[]}},"신경안정제":{{"해당":false,"목록":[{{"약물명":"약품명","성분명":"성분명","복용시작":"날짜","복용중":false}}]}},"수면제":{{"해당":false,"목록":[]}},"각성제":{{"해당":false,"목록":[]}},"진통제":{{"해당":false,"목록":[]}}}},"item3":{{"해당":true,"목록":[{{"질병":"한글질병명","코드":"코드","최초진료일":"YYYY-MM-DD","마지막진료일":"YYYY-MM-DD","총방문횟수":숫자,"입원횟수":0,"수술횟수":0,"수술명":[],"검사내용":"구체적 검사명 (X-ray 몇매, MRI, 혈액검사 등)","고지사유":"왜 고지해야 하는지 신입설계사도 이해할 수 있게","주의":false}}]}},"item4":{{"입원":{{"해당":false,"목록":[{{"질병":"질병명","입원일":"날짜","퇴원일":"날짜","병원":"병원명","일수":숫자}}]}},"수술":{{"해당":false,"목록":[{{"질병":"질병명","수술명":"수술명 구체적으로","날짜":"날짜","병원":"병원명"}}]}},"시술처치":{{"해당":false,"목록":[{{"내용":"시술명·병원·날짜"}}]}},"치료7일":{{"해당":false,"목록":[{{"질병":"한글질병명","코드":"코드","최초진료일":"날짜","마지막진료일":"날짜","총방문횟수":숫자}}]}},"투약30일":{{"해당":false,"목록":[{{"질병":"한글질병명","코드":"코드","약품명":"약품명","성분명":"성분명","용도":"어떤 질환 치료약","처방내역":[{{"날짜":"날짜","투약일수":숫자}}],"합산일수":숫자}}]}}}},"item5":{{"해당":false,"목록":{{"암":"해당없음","백혈병":"해당없음","고혈압":"해당없음","협심증":"해당없음","심근경색":"해당없음","심장판막증":"해당없음","간경화증":"해당없음","뇌졸중":"해당없음","당뇨":"해당없음","에이즈HIV":"해당없음","항문질환":"해당없음"}}}},"signal":{{"status":"green","reason":"판단 근거"}},"요약":["고지필요 핵심사항 구체적으로"]}}"""
 
-    # JSONL 파싱 성공 시 기존 구조로 변환
-    if items:
-        return _jsonl_to_structured(items, structured)
-
-    # 방법2: 기존 JSON 방식 폴백 (혹시 JSON으로 응답한 경우)
-    raw_clean = raw
-    if raw_clean.startswith('```'):
-        raw_clean = re.sub(r'^```[a-z]*\n?', '', raw_clean).rstrip('`').strip()
-    js = raw_clean.find('{')
-    je = raw_clean.rfind('}')
-    if js != -1 and je != -1:
-        try:
-            return json.loads(raw_clean[js:je+1])
-        except:
-            pass
-
-    # 방법3: 빈 결과 반환 (오류 방지)
-    return _empty_result()
-
-
-from collections import defaultdict
-import re
-
-def _jsonl_to_structured(items, structured):
-    """
-    [지점장님 전용 최종 통합본]
-    1. 3개월: 6대 항목(확정진단, 의심소견, 치료, 입원, 수술, 투약) & 마약/정신과 약물
-    2. 1년: 동일 질병 2회 이상 진료 시 재검사/추가검사 (병원이 달라도 합산)
-    3. 5년: 11대 중대질병(암, 협심증, 당뇨 등) 전수 조사
-    4. 5년(합산): 순수 통원 횟수(7일) & 순수 투약 일수(30일)
-    """
-    result = _empty_result()
-    
-    # [데이터 저장소]
-    drug_agg = defaultdict(lambda: {'total_med_days': 0, 'details': [], 'code': '', 'dates_seen': set()})
-    visit_agg = defaultdict(lambda: {'visit_dates': set(), 'code': '', 'name': ''})
-    exam_agg = defaultdict(lambda: {'dates': set(), 'summaries': [], 'is_recheck': False, 'code': '', 'name': ''})
-    
-    # 실시간 분석 기준일 (오늘 날짜 기반 역산)
-    ref_d3 = structured.get('d3', '')
-    ref_d1y = structured.get('d1y', '')
-    ref_d5y = structured.get('d5y', '')
-
-    # 키워드 사전
-    critical_kw = ['암', '백혈병', '고혈압', '협심증', '심근경색', '심장판막증', '간경화증', '뇌졸중', '당뇨', '에이즈', '항문질환']
-    special_med_map = {'마약': '마약성진통제', '정신': '신경안정제', '수면': '수면제', '혈압': '혈압강하제'}
-
-    for item in items:
-        t = item.get('type', '')
-        date_val = item.get('date', '')
-        disease = item.get('disease', '')
-        count_val = str(item.get('count', '0'))
-        summary = item.get('summary', '')
-
-        try: num_val = int(re.search(r'\d+', count_val).group())
-        except: num_val = 0
-
-        code_match = re.search(r'\(([A-Z][0-9]{2,})\)', disease)
-        code = code_match.group(1) if code_match else 'Unknown'
-        disease_name = re.sub(r'\([^)]+\)', '', disease).strip()
-        key = code if code != 'Unknown' else disease_name
-
-        # ---------------------------------------------------------
-        # 1. [3개월 이내] 6대 항목 전수조사 (기존 누락 보정)
-        # ---------------------------------------------------------
-        if date_val >= ref_d3:
-            # (1) 질병확정진단 및 의심소견
-            if '확정' in t or '확정' in summary:
-                result['item1']['질병확정진단']['해당'] = True
-                result['item1']['질병확정진단']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val})
-            elif '의심' in t or '의심' in summary:
-                result['item1']['질병의심소견']['해당'] = True
-                result['item1']['질병의심소견']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val})
-            
-            # (2) 투약
-            elif '투약' in t or '약' in summary:
-                result['item1']['투약']['해당'] = True
-                result['item1']['투약']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val, '투약일수': num_val, '용도': summary})
-            
-            # (3) 수술 및 시술
-            elif any(k in t+summary for k in ['수술', '시술']):
-                result['item1']['수술']['해당'] = True
-                result['item1']['수술']['목록'].append({'질병': disease_name, '수술명': summary, '날짜': date_val})
-            
-            # (4) 입원
-            elif '입원' in t:
-                result['item1']['입원']['해당'] = True
-                result['item1']['입원']['목록'].append({'질병': disease_name, '날짜': date_val})
-
-            # 마약/정신과 등 특별약물 체크
-            for kw, cat in special_med_map.items():
-                if kw in t or kw in summary:
-                    result['item2'][cat]['해당'] = True
-                    result['item2'][cat]['목록'].append({'약물명': disease_name, '복용시작': date_val})
-
-        # ---------------------------------------------------------
-        # 2. [1년 이내] 재검사 데이터 수집 (동일 질병 2회 이상)
-        # ---------------------------------------------------------
-        if date_val >= ref_d1y:
-            exam_agg[key]['dates'].add(date_val)
-            exam_agg[key]['summaries'].append(summary)
-            if any(k in t for k in ['재검사', '추가검사', '1년']):
-                exam_agg[key]['is_recheck'] = True
-
-        # ---------------------------------------------------------
-        # 3. [5년 이내] 중대질병, 입원/수술, 7일/30일 순수 합산
-        # ---------------------------------------------------------
-        if date_val >= ref_d5y:
-            # (1) 11대 중대질환 전수 체크 (누락 방지)
-            for kw in critical_kw:
-                if kw in disease_name or kw in summary:
-                    result['item5']['해당'] = True
-                    result['item5']['목록'][kw] = f"{date_val} / {summary}"
-
-            # (2) 입원/수술
-            if '입원' in t:
-                result['item4']['입원']['해당'] = True
-                result['item4']['입원']['목록'].append({'질병': disease_name, '입원일': date_val, '일수': num_val})
-            elif any(k in t for k in ['수술', '시술']):
-                result['item4']['수술']['해당'] = True
-                result['item4']['수술']['목록'].append({'질병': disease_name, '수술명': summary, '날짜': date_val})
-
-            # (3) 7일 통원 및 30일 투약 순수 합산
-            visit_agg[key]['visit_dates'].add(date_val)
-            visit_agg[key]['name'] = disease_name
-            visit_agg[key]['code'] = code
-            
-            if '투약' in t or '30일' in t:
-                date_key = f"{date_val}_{key}_{num_val}"
-                if date_key not in drug_agg[key]['dates_seen']:
-                    drug_agg[key]['total_med_days'] += num_val
-                    drug_agg[key]['dates_seen'].add(date_key)
-                drug_agg[key]['details'].append(summary)
-
-    # ---------------------------------------------------------
-    # [최종 후처리] 실제 횟수/일수로 판정
-    # ---------------------------------------------------------
-    
-    # 1. 1년 내 재검사 (2회 이상 방문)
-    for k, d in exam_agg.items():
-        if len(d['dates']) >= 2 and d['is_recheck']:
-            result['item3']['해당'] = True
-            result['item3']['목록'].append({'질병': d['name'], '총방문횟수': len(d['dates']), '검사내용': ", ".join(list(set(d['summaries'])))[:100]})
-
-    # 2. 5년 내 7일 치료 (순수 방문 횟수)
-    for k, d in visit_agg.items():
-        if len(d['visit_dates']) >= 7:
-            result['item4']['치료7일']['해당'] = True
-            result['item4']['치료7일']['목록'].append({'질병': d['name'], '총방문횟수': len(d['visit_dates'])})
-
-    # 3. 5년 내 30일 투약 (순수 처방 일수)
-    for k, d in drug_agg.items():
-        if d['total_med_days'] >= 30:
-            result['item4']['투약30일']['해당'] = True
-            result['item4']['투약30일']['목록'].append({'질병': d.get('name', k), '합산일수': d['total_med_days']})
-
-    return result
-
-def _empty_result():
-    """빈 결과 구조 반환"""
-    return {
-        'item1': {
-            '질병확정진단': {'해당': False, '목록': []},
-            '질병의심소견': {'해당': False, '목록': []},
-            '치료': {'해당': False, '목록': []},
-            '입원': {'해당': False, '목록': []},
-            '수술': {'해당': False, '목록': []},
-            '투약': {'해당': False, '목록': []}
-        },
-        'item2': {
-            '마약성진통제': {'해당': False, '목록': []},
-            '혈압강하제': {'해당': False, '목록': []},
-            '신경안정제': {'해당': False, '목록': []},
-            '수면제': {'해당': False, '목록': []},
-            '각성제': {'해당': False, '목록': []},
-            '진통제': {'해당': False, '목록': []}
-        },
-        'item3': {'해당': False, '목록': []},
-        'item4': {
-            '입원': {'해당': False, '목록': []},
-            '수술': {'해당': False, '목록': []},
-            '시술처치': {'해당': False, '목록': []},
-            '치료7일': {'해당': False, '목록': []},
-            '투약30일': {'해당': False, '목록': []}
-        },
-        'item5': {
-            '해당': False,
-            '목록': {
-                '암': '해당없음', '백혈병': '해당없음', '고혈압': '해당없음',
-                '협심증': '해당없음', '심근경색': '해당없음', '심장판막증': '해당없음',
-                '간경화증': '해당없음', '뇌졸중': '해당없음', '당뇨': '해당없음',
-                '에이즈HIV': '해당없음', '항문질환': '해당없음'
-            }
-        },
-        'signal': {'status': 'green', 'reason': '분석 완료'},
-        '요약': []
-    }
-
+    client=anthropic.Anthropic(api_key=api_key)
+    msg=client.messages.create(model="claude-sonnet-4-20250514",max_tokens=8192,messages=[{"role":"user","content":prompt}])
+    raw=msg.content[0].text.strip()
+    if raw.startswith('```'): raw=re.sub(r'^```[a-z]*\n?','',raw).rstrip('`').strip()
+    js=raw.find('{'); je=raw.rfind('}')
+    if js!=-1 and je!=-1: raw=raw[js:je+1]
+    return json.loads(raw)
 
 # ===== 렌더링 =====
 
@@ -1315,7 +1107,7 @@ if btn:
             with pdfplumber.open(BytesIO(c)) as pdf:
                 for pg in pdf.pages:
                     t=pg.extract_text()
-                    if t: all_text.append(t)
+                    if t: all_text.append(t[:2000])
 
         if pdf_d:
             c=pdf_d.read()
@@ -1325,7 +1117,7 @@ if btn:
             with pdfplumber.open(BytesIO(c)) as pdf:
                 for pg in pdf.pages:
                     t=pg.extract_text()
-                    if t: all_text.append(t)
+                    if t: all_text.append(t[:2000])
 
         if pdf_r:
             c=pdf_r.read()
@@ -1364,14 +1156,14 @@ if btn:
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits5y.items() if v['count']>=7
             },
-'drug_by_disease_5y':{
-    k:{'code':v.get('code',''), 'disease':v.get('disease',''), 'drug_name':v.get('drug_name',''),
-       'component':v.get('component',''), 'total_days':v.get('total_days',0), 
-       'prescriptions':v.get('prescriptions',[])}
-    for k,v in drug5y.items()
-},
-            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y],
-            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y],
+            'drug_by_disease_5y':{
+                k:{'code':v['code'],'disease':v['disease'],'drug_name':v['drug_name'],
+                   'component':v['component'],'total_days':v['total_days'],
+                   'prescriptions':v['prescriptions']}
+                for k,v in drug5y.items()
+            },
+            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y[:15]],
+            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y[:20]],
             'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y],
             'rx_3m':[{
                 'date':rx['date'],
@@ -1384,7 +1176,7 @@ if btn:
 
         with st.spinner("🤖 Claude AI 분석 중... (30초~1분 소요)"):
             try:
-                result=analyze(api_key,customer_name,structured,'\n'.join(all_text))
+                result=analyze(api_key,customer_name,structured,'\n'.join(all_text[:5]))
                 st.session_state.result=result
                 st.session_state.customer=customer_name
                 st.session_state.today_str=today_str
