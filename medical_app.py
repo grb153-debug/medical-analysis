@@ -488,7 +488,7 @@ def analyze(api_key, customer_name, structured, all_text):
 {json.dumps(structured, ensure_ascii=False, indent=2)}
 
 === 원본 텍스트 (수술/검사 판별용) ===
-{all_text[:4000]}
+{all_text[:50000]}
 
 위 시스템 지침에 따라 고지의무 대상 항목을 JSONL 형식으로 출력하라."""
 
@@ -1366,7 +1366,7 @@ if btn:
 
         with st.spinner("🤖 Claude AI 분석 중... (30초~1분 소요)"):
             try:
-                result=analyze(api_key,customer_name,structured,'\n'.join(all_text[:5]))
+                result=analyze(api_key,customer_name,structured,'\n'.join(all_text))
                 st.session_state.result=result
                 st.session_state.customer=customer_name
                 st.session_state.today_str=today_str
