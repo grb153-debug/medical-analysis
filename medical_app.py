@@ -1269,7 +1269,7 @@ if btn:
             with pdfplumber.open(BytesIO(c)) as pdf:
                 for pg in pdf.pages:
                     t=pg.extract_text()
-                    if t: all_text.append(t[:2000])
+                    if t: all_text.append(t)
 
         if pdf_d:
             c=pdf_d.read()
@@ -1279,7 +1279,7 @@ if btn:
             with pdfplumber.open(BytesIO(c)) as pdf:
                 for pg in pdf.pages:
                     t=pg.extract_text()
-                    if t: all_text.append(t[:2000])
+                    if t: all_text.append(t)
 
         if pdf_r:
             c=pdf_r.read()
@@ -1324,8 +1324,8 @@ if btn:
                    'prescriptions':v['prescriptions']}
                 for k,v in drug5y.items()
             },
-            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y[:15]],
-            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y[:20]],
+            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y],
+            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y],
             'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y],
             'rx_3m':[{
                 'date':rx['date'],
