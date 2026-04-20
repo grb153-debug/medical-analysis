@@ -378,60 +378,30 @@ def match_rx_to_disease(basic_records, rx_records, d5y, today):
     return matched
 
 def calc_drug_by_disease(matched_rx):
-    """질병코드 + 성분명 기준으로 투약일수 합산"""
-    # 성분명 정규화 (소문자 첫 단어)
-    def norm_comp(comp):
-        if not comp: return ''
-        return comp.lower().split()[0] if comp.strip() else ''
+    # 약 이름에서 잡다한 글자(정, 캡슐, 공백)를 다 지우고 글자만 비교
+    def clean_k(text): return re.sub(r'[^가-힣a-zA-Z0-9]', '', str(text or '')).lower()
 
-    # 처방조제 중복 제거: 같은 날 같은 성분이면 외래 우선
-    deduped = []
-    seen = {}
+    groups = defaultdict(list)
     for rx in matched_rx:
-        comp_key = norm_comp(rx.get('component','')) or rx.get('drug_name','').lower()[:15]
-        key = (rx['date'], comp_key)
-        rx_type = rx.get('rx_type','')
-        if key not in seen:
-            seen[key] = rx_type
-            deduped.append(rx)
-        elif '처방조제' in seen[key] and '외래' in rx_type:
-            deduped = [r for r in deduped if not (r['date']==rx['date'] and (norm_comp(r.get('component','')) or r.get('drug_name','').lower()[:15])==comp_key)]
-            deduped.append(rx)
-            seen[key] = rx_type
-
-    groups=defaultdict(list)
-    for rx in deduped:
-        comp_key=norm_comp(rx.get('component',''))
-        drug_key=rx.get('drug_name','').lower()[:15]
-        code=rx.get('code','') or 'UNKNOWN'
-        key=comp_key or drug_key
+        # 성분명 우선, 없으면 약 이름 앞 5글자로 묶음
+        key = clean_k(rx.get('component')) if rx.get('component') else clean_k(rx.get('drug_name'))[:5]
         groups[key].append(rx)
 
-    result={}
-    for comp,items in groups.items():
-        # 같은 날 같은 성분 → 최대 일수만 (다른 날짜는 독립 합산)
-        date_max={}
-        code='UNKNOWN'
-        for item in items:
-            d=item['date']
-            if d not in date_max or item['days']>date_max[d]:
-                date_max[d]=item['days']
-            # 질병코드 있으면 우선 사용
-            if item.get('code') and item['code'] != 'UNKNOWN':
-                code = item['code']
-
-        total=sum(date_max.values())
-        if total>=30:
-            rep=items[0]
-            # UNKNOWN 코드면 약품명으로 대체
-            display_disease = rep.get('disease','') or rep.get('drug_name','')
-            result[f"{comp}"]={
-                'code': code if code != 'UNKNOWN' else '',
-                'disease': display_disease,
-                'drug_name':rep.get('drug_name',''),
-                'component':rep.get('component',''),
-                'total_days':total,
-                'prescriptions':[{'date':d,'days':days} for d,days in sorted(date_max.items())]
+    result = {}
+    for key, items in groups.items():
+        # 같은 날 중복 처방은 하루치만 계산 (정확한 합산)
+        date_map = {it['date']: it['days'] for it in items}
+        total = sum(date_map.values())
+        
+        # 20일 이상이면 누락 방지를 위해 AI에게 전달
+        if total >= 20: 
+            rep = items[0]
+            result[key] = {
+                'code': rep.get('code', ''),
+                'disease': rep.get('disease', '관련 질환 확인 필요'),
+                'drug_name': rep.get('drug_name', ''),
+                'total_days': total,
+                'prescriptions': [{'date':d, 'days':v} for d,v in sorted(date_map.items())]
             }
     return result
 
