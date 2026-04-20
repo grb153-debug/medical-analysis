@@ -523,9 +523,32 @@ def analyze(api_key, customer_name, structured, all_text):
     return _empty_result()
 
 
+from collections import defaultdict
+import re
+
 def _jsonl_to_structured(items, structured):
-    """지점장님 원본 로직 유지 + 입원일수/30일투약/재검사 합산 및 상세표기 완벽 교정"""
+    """
+    [지점장님 전용 최종 통합본]
+    1. 3개월: 6대 항목(확정진단, 의심소견, 치료, 입원, 수술, 투약) & 마약/정신과 약물
+    2. 1년: 동일 질병 2회 이상 진료 시 재검사/추가검사 (병원이 달라도 합산)
+    3. 5년: 11대 중대질병(암, 협심증, 당뇨 등) 전수 조사
+    4. 5년(합산): 순수 통원 횟수(7일) & 순수 투약 일수(30일)
+    """
     result = _empty_result()
+    
+    # [데이터 저장소]
+    drug_agg = defaultdict(lambda: {'total_med_days': 0, 'details': [], 'code': '', 'dates_seen': set()})
+    visit_agg = defaultdict(lambda: {'visit_dates': set(), 'code': '', 'name': ''})
+    exam_agg = defaultdict(lambda: {'dates': set(), 'summaries': [], 'is_recheck': False, 'code': '', 'name': ''})
+    
+    # 실시간 분석 기준일 (오늘 날짜 기반 역산)
+    ref_d3 = structured.get('d3', '')
+    ref_d1y = structured.get('d1y', '')
+    ref_d5y = structured.get('d5y', '')
+
+    # 키워드 사전
+    critical_kw = ['암', '백혈병', '고혈압', '협심증', '심근경색', '심장판막증', '간경화증', '뇌졸중', '당뇨', '에이즈', '항문질환']
+    special_med_map = {'마약': '마약성진통제', '정신': '신경안정제', '수면': '수면제', '혈압': '혈압강하제'}
 
     for item in items:
         t = item.get('type', '')
@@ -534,94 +557,109 @@ def _jsonl_to_structured(items, structured):
         count_val = str(item.get('count', '0'))
         summary = item.get('summary', '')
 
-        # 숫자 추출 로직 (입원일수, 투약일수, 통원횟수 공통 사용)
-        try:
-            num_val = int(re.search(r'\d+', count_val).group())
-        except:
-            num_val = 0
+        try: num_val = int(re.search(r'\d+', count_val).group())
+        except: num_val = 0
 
-        # T11/L4 같은 부위는 거르고 진짜 질병 코드만 추출 [cite: 65]
         code_match = re.search(r'\(([A-Z][0-9]{2,})\)', disease)
-        code = code_match.group(1) if code_match else ''
+        code = code_match.group(1) if code_match else 'Unknown'
         disease_name = re.sub(r'\([^)]+\)', '', disease).strip()
+        key = code if code != 'Unknown' else disease_name
 
-        # 1. 최근 3개월 이내 의료행위 (item1) [cite: 66]
-        if '3개월' in t:
-            if '투약' in t or '투약' in summary:
+        # ---------------------------------------------------------
+        # 1. [3개월 이내] 6대 항목 전수조사 (기존 누락 보정)
+        # ---------------------------------------------------------
+        if date_val >= ref_d3:
+            # (1) 질병확정진단 및 의심소견
+            if '확정' in t or '확정' in summary:
+                result['item1']['질병확정진단']['해당'] = True
+                result['item1']['질병확정진단']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val})
+            elif '의심' in t or '의심' in summary:
+                result['item1']['질병의심소견']['해당'] = True
+                result['item1']['질병의심소견']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val})
+            
+            # (2) 투약
+            elif '투약' in t or '약' in summary:
                 result['item1']['투약']['해당'] = True
-                result['item1']['투약']['목록'].append({
-                    '질병': disease_name, '코드': code, '날짜': date_val,
-                    '약품명': summary[:30], '성분명': '', '용도': summary, '투약일수': num_val
-                })
+                result['item1']['투약']['목록'].append({'질병': disease_name, '코드': code, '날짜': date_val, '투약일수': num_val, '용도': summary})
+            
+            # (3) 수술 및 시술
             elif any(k in t+summary for k in ['수술', '시술']):
                 result['item1']['수술']['해당'] = True
-                result['item1']['수술']['목록'].append({
-                    '질병': disease_name, '수술명': summary, '날짜': date_val, '병원': ''
-                })
+                result['item1']['수술']['목록'].append({'질병': disease_name, '수술명': summary, '날짜': date_val})
+            
+            # (4) 입원
             elif '입원' in t:
                 result['item1']['입원']['해당'] = True
-                result['item1']['입원']['목록'].append({
-                    '질병': disease_name, '코드': code, '날짜': date_val, '병원': ''
-                })
-            else:
-                result['item1']['질병확정진단']['해당'] = True
-                result['item1']['질병확정진단']['목록'].append({
-                    '질병': disease_name, '코드': code, '날짜': date_val, '병원': '', '주의': False
-                })
+                result['item1']['입원']['목록'].append({'질병': disease_name, '날짜': date_val})
 
-        # 2. [지점장님 요청] 1년 이내 재검사/추적관찰 (item3) 
-        # 병원이 달라도 동일 질병코드로 합산된 방문 횟수와 상세 검사 내용을 표기합니다.
-        elif any(k in t for k in ['재검사', '추가검사', '1년']):
+            # 마약/정신과 등 특별약물 체크
+            for kw, cat in special_med_map.items():
+                if kw in t or kw in summary:
+                    result['item2'][cat]['해당'] = True
+                    result['item2'][cat]['목록'].append({'약물명': disease_name, '복용시작': date_val})
+
+        # ---------------------------------------------------------
+        # 2. [1년 이내] 재검사 데이터 수집 (동일 질병 2회 이상)
+        # ---------------------------------------------------------
+        if date_val >= ref_d1y:
+            exam_agg[key]['dates'].add(date_val)
+            exam_agg[key]['summaries'].append(summary)
+            if any(k in t for k in ['재검사', '추가검사', '1년']):
+                exam_agg[key]['is_recheck'] = True
+
+        # ---------------------------------------------------------
+        # 3. [5년 이내] 중대질병, 입원/수술, 7일/30일 순수 합산
+        # ---------------------------------------------------------
+        if date_val >= ref_d5y:
+            # (1) 11대 중대질환 전수 체크 (누락 방지)
+            for kw in critical_kw:
+                if kw in disease_name or kw in summary:
+                    result['item5']['해당'] = True
+                    result['item5']['목록'][kw] = f"{date_val} / {summary}"
+
+            # (2) 입원/수술
+            if '입원' in t:
+                result['item4']['입원']['해당'] = True
+                result['item4']['입원']['목록'].append({'질병': disease_name, '입원일': date_val, '일수': num_val})
+            elif any(k in t for k in ['수술', '시술']):
+                result['item4']['수술']['해당'] = True
+                result['item4']['수술']['목록'].append({'질병': disease_name, '수술명': summary, '날짜': date_val})
+
+            # (3) 7일 통원 및 30일 투약 순수 합산
+            visit_agg[key]['visit_dates'].add(date_val)
+            visit_agg[key]['name'] = disease_name
+            visit_agg[key]['code'] = code
+            
+            if '투약' in t or '30일' in t:
+                date_key = f"{date_val}_{key}_{num_val}"
+                if date_key not in drug_agg[key]['dates_seen']:
+                    drug_agg[key]['total_med_days'] += num_val
+                    drug_agg[key]['dates_seen'].add(date_key)
+                drug_agg[key]['details'].append(summary)
+
+    # ---------------------------------------------------------
+    # [최종 후처리] 실제 횟수/일수로 판정
+    # ---------------------------------------------------------
+    
+    # 1. 1년 내 재검사 (2회 이상 방문)
+    for k, d in exam_agg.items():
+        if len(d['dates']) >= 2 and d['is_recheck']:
             result['item3']['해당'] = True
-            result['item3']['목록'].append({
-                '질병': disease_name, '코드': code,
-                '최초진료일': date_val, '마지막진료일': date_val,
-                '총방문횟수': num_val, '입원횟수': 0, '수술횟수': 0,
-                '수술명': [], 
-                '검사내용': summary if summary else "상세 기록 확인 필요", # 어떤 검사를 했는지 상세 표기
-                '고지사유': f"{disease_name} 관련 추가 검사 및 추적 관찰", 
-                '주의': False
-            })
+            result['item3']['목록'].append({'질병': d['name'], '총방문횟수': len(d['dates']), '검사내용': ", ".join(list(set(d['summaries'])))[:100]})
 
-        # 3. 최근 5년 이내 의료행위 (item4) [cite: 71]
-        elif any(k in t for k in ['수술', '시술']):
-            result['item4']['수술']['해당'] = True
-            result['item4']['수술']['목록'].append({
-                '질병': disease_name, '수술명': summary, '날짜': date_val, '병원': ''
-            })
-        elif '입원' in t:
-            result['item4']['입원']['해당'] = True
-            result['item4']['입원']['목록'].append({
-                '질병': disease_name, '입원일': date_val, '퇴원일': '', '병원': '', '일수': num_val # [해결] 0 대신 실제 일수
-            })
-        elif '30일' in t or '투약' in t:
-            result['item4']['투약30일']['해당'] = True
-            result['item4']['투약30일']['목록'].append({
-                '질병': disease_name, '코드': code, '약품명': disease_name, 
-                '합산일수': num_val, '용도': summary, '처방내역': [{'날짜': date_val, '투약일수': num_val}]
-            })
-        elif '7일' in t or '치료' in t:
+    # 2. 5년 내 7일 치료 (순수 방문 횟수)
+    for k, d in visit_agg.items():
+        if len(d['visit_dates']) >= 7:
             result['item4']['치료7일']['해당'] = True
-            result['item4']['치료7일']['목록'].append({
-                '질병': disease_name, '코드': code,
-                '최초진료일': date_val.split('~')[0].strip() if '~' in date_val else date_val,
-                '마지막진료일': date_val.split('~')[-1].strip() if '~' in date_val else date_val,
-                '총방문횟수': num_val
-            })
+            result['item4']['치료7일']['목록'].append({'질병': d['name'], '총방문횟수': len(d['visit_dates'])})
 
-        # 4. 10대 중대질환 (item5) [cite: 70]
-        elif '중대' in t or '중대질환' in t:
-            result['item5']['해당'] = True
-            for k in ['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']:
-                if k in disease or k in summary:
-                    result['item5']['목록'][k] = f"{date_val} / {summary}"
-
-    # 요약 및 신호등 설정 [cite: 78]
-    result['요약'] = [item.get('summary', '') for item in items[:7] if item.get('summary')]
-    result['signal'] = {'status': 'yellow' if items else 'green', 'reason': f'총 {len(items)}건 고지 대상 확인'}
+    # 3. 5년 내 30일 투약 (순수 처방 일수)
+    for k, d in drug_agg.items():
+        if d['total_med_days'] >= 30:
+            result['item4']['투약30일']['해당'] = True
+            result['item4']['투약30일']['목록'].append({'질병': d.get('name', k), '합산일수': d['total_med_days']})
 
     return result
-
 
 def _empty_result():
     """빈 결과 구조 반환"""
