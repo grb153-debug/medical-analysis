@@ -1318,12 +1318,12 @@ if btn:
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits5y.items() if v['count']>=7
             },
-            'drug_by_disease_5y':{
-                k:{'code':v['code'],'disease':v['disease'],'drug_name':v['drug_name'],
-                   'component':v['component'],'total_days':v['total_days'],
-                   'prescriptions':v['prescriptions']}
-                for k,v in drug5y.items()
-            },
+'drug_by_disease_5y':{
+    k:{'code':v.get('code',''), 'disease':v.get('disease',''), 'drug_name':v.get('drug_name',''),
+       'component':v.get('component',''), 'total_days':v.get('total_days',0), 
+       'prescriptions':v.get('prescriptions',[])}
+    for k,v in drug5y.items()
+},
             'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y],
             'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y],
             'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y],
