@@ -152,13 +152,37 @@ DN = {
     'AA099':'위장염 및 결장염','AK291':'급성위염',
 }
 
-SURGERY_KW = ['절제술','적출술','봉합술','발치술','임플란트식립','치조골절제','편도절제술',
-    '충수절제술','용종절제술','관절경','복강경','절개배농','낭종제거술','피부절제술',
-    '피판술','치핵절제술','자궁절제술','제왕절개','종양절제','산립종절개','피부양성종양적출']
-NOT_SURGERY_KW = ['단순처치','염증성처치','드레싱','창상처치','신경차단','관절천자',
+SURGERY_KW = [
+    # 절제/적출/절개
+    '절제술','적출술','절개술','절단술','봉합술','피판술',
+    # 치과 수술
+    '발치술','임플란트식립','치조골절제','임플란트고정체식립','고정체식립','식립술',
+    # 이비인후과/편도
+    '편도절제술','아데노이드절제술',
+    # 복부/소화기
+    '충수절제술','용종절제술','결장경하종양수술','위절제술','담낭절제술','장절제술',
+    # 관절/척추
+    '관절경','복강경','척추성형술','경피적척추성형술','골시멘트','추간판절제술','추체성형술',
+    # 부인과
+    '자궁절제술','제왕절개','자궁근종절제술','난소절제술','소작술','약물소작술','레이저소작술',
+    # 피부/종양
+    '낭종제거술','피부절제술','피부양성종양적출','종양절제','지방종절제','피지낭종제거',
+    # 안과
+    '산립종절개','백내장수술','유리체절제술','망막수술',
+    # 기타 수술
+    '치핵절제술','탈장수술','갑상선절제술','편평상피절제','고막절개술','골절정복술',
+    '내고정술','외고정술','인공관절치환술','골이식술',
+    # SNARE/올가미 시술 (내시경적 절제)
+    'SNARE','snare','올가미절제','내시경절제','점막절제술','점막하박리술',
+]
+NOT_SURGERY_KW = [
+    '단순처치','염증성처치','드레싱','창상처치','신경차단','관절천자',
     '관절강내주사','히알루론산','스테로이드주사','물리치료','표층열','심층열',
     '초음파치료','전기자극','견인치료','스케일링','치주소파','치근활택',
-    '충치치료','신경치료','크라운','보철','주사치료','재활저출력','간헐적견인','경피적전기']
+    '신경치료','근관성형','크라운','보철','주사치료','재활저출력','간헐적견인',
+    '경피적전기','조영술','혈관조영','도관삽입','스텐트삽입','풍선확장',
+    '화상처치','욕창처치','봉합처치','창상봉합처치',
+]
 CRITICAL_CODES = ['AF','F3','F4','F5','F6','F7','F8','F9']
 CRITICAL_KW = ['암','악성','종양','백혈병','뇌졸중','심근경색','협심증','간경화','당뇨','고혈압']
 
@@ -442,146 +466,129 @@ def analyze(api_key, customer_name, structured, all_text):
     d1y_str=structured['d1y']
     d5y_str=structured['d5y']
 
-    # 11대 질병 코드 목록 (item4 치료7일/투약30일에서 제외)
-    ELEVEN_DISEASE_CODES = [
-        'AC','AI0','AI1','AI2','AI3','AI4','AI5','AI6','AI7','AI8','AI9',
-        'AE10','AE11','AK70','AK71','AK72','AK73','AK74','AK746',
-        'AK750','AK751','AF0','AF1','AF2','AF3','AI60','AI61','AI62','AI63','AI64','AI65','AI66','AI67','AI68','AI69'
-    ]
+    prompt=f"""당신은 보험 병력 데이터 정리 전문가입니다.
+아래 구조화된 의료기록 데이터를 받아서, 보험 설계사가 고객 병력을 파악할 수 있도록
+빠짐없이 상세하게 정리해주세요.
 
-    prompt=f"""당신은 최고 수준의 보험 심사 전문가입니다.
-아래는 Python 코드가 정확하게 계산한 의료기록 구조화 데이터입니다.
-날짜계산/통원횟수/투약일수는 이미 정확하게 계산되었습니다.
-당신은 판단과 검사내용 파악, 질병 그룹핑만 하면 됩니다.
+【중요 원칙】
+- 당신은 고지 여부를 판단하지 않습니다
+- 데이터를 최대한 빠짐없이 상세하게 정리하는 것이 목적입니다
+- 설계사가 직접 판단할 수 있도록 모든 정보를 제공합니다
 
 고객명: {customer_name}
 분석기준일: {today_str}
-3개월 기준: {d3_str} ~ {today_str}
-1년 기준: {d1y_str} ~ {today_str}
-5년 기준: {d5y_str} ~ {today_str}
+3개월 기준일: {d3_str}
+1년 기준일: {d1y_str}
+5년 기준일: {d5y_str}
 
 === 구조화 데이터 ===
 {json.dumps(structured, ensure_ascii=False, indent=2)}
 
-=== 원본 텍스트 (검사내용/시술내용 파악용) ===
+=== 세부진료 원본 텍스트 (수술/시술 상세 파악용) ===
 {all_text[:5000]}
 
-[핵심 판단 규칙]
+【섹션별 정리 기준】
 
-■ 질병 그룹핑 규칙
-- 의학적으로 관련 있는 질병코드는 하나로 묶어서 표시
-  예: AI209 + AI2088 → "협심증 (AI209, AI2088)"
+■ section1: 최근 3개월 이내 진료 기록
+- records_3m의 모든 항목을 질병코드별로 묶어서 표시
+- rx_3m의 모든 처방약을 표시 (최초처방일 포함)
+- 의학적으로 관련 있는 질병코드는 하나로 묶기
   예: AM501 + AM5422 → "경추 디스크 (AM501, AM5422)"
-  예: AK759 + AK760 → "간질환 (AK759, AK760)"
-- 단, 부위가 다른 경우 반드시 분리 (경추 ≠ 요추 ≠ 무릎 ≠ 어깨)
-- 11대 질병은 item5에만 표시, item4 치료7일/투약30일에서 제외
+- 부위가 다른 경우 반드시 분리 (경추 ≠ 요추 ≠ 무릎)
 
-■ item1 (3개월 이내)
-- records_3m + rx_3m 데이터 모두 사용 (날짜 재계산 절대 금지)
-- rx_3m의 각 약품: 같은 날 같은 질병으로 여러 약품 처방 시 질병별로 묶기
-  · 대표 약품명 + 치료 목적 표시
-  · 모든 약품명과 각각의 치료 목적 명시
-- rx_3m가 비어있지 않으면 반드시 투약.해당=true
+■ section2: 최근 1년 이내 재검사/추가검사
+- visits_1y_2plus 기준
+- 최초 검사일이 1년 기준일({d1y_str}) 이후인 것만
+- 같은 날 여러 검사 → 최초 1회로 카운트
+- 세부진료 텍스트에서 검사명 구체적으로 파악
 
-■ item3 (1년 이내 재검사/추가검사) - 중요
-판단 기준:
-1. 최초 검사 날짜가 반드시 1년 기준일({d1y_str}) 이후여야 함
-2. 동일 질병코드로 서로 다른 날짜에 2회 이상 검사를 받은 경우
-   - 같은 날 여러 검사 → 최초 1회로 카운트 (추가검사 아님)
-   - 다른 날 동일 질병으로 재검사/추가검사 → 고지 대상
-3. 정기 건강검진은 해당 없음
-4. 원본 텍스트에서 검사명 구체적으로 파악
-   (MRI, CT, X-ray, 혈액검사, 근전도, 신경전도, 관절천자, 초음파, 내시경, 심전도, 심초음파 등)
-5. 물리치료/주사치료는 검사 아님
+■ section3: 최근 5년 이내 병력 (질병별 상세)
+- visits_5y_7plus + drug_by_disease_5y + surgeries_5y + inpatient_5y를 질병별로 통합
+- 관련 질병코드는 하나로 묶기
+- 각 질병별로 아래 정보 전부 포함:
+  · 초진일, 최종진료일, 통원횟수
+  · 입원 여부 (날짜/병원/일수)
+  · 수술 여부 (수술명 상세/날짜/병원/부위)
+  · 투약 (약품명/성분명/치료목적/합산일수)
+  · 치료내역 (어떤 치료를 받았는지 구체적으로)
+  · 해당 고지항목 (7일이상치료, 30일이상투약, 입원, 수술 중 해당되는 것)
 
-■ item4 (5년 이내)
-- 치료7일: visits_5y_7plus 그대로 사용. 11대 질병 코드 제외
-- 투약30일: drug_by_disease_5y 그대로 사용. 11대 질병 코드 제외
-  · 같은 질병으로 여러 약품 처방 시: 질병명으로 묶고 각 약품별로 표시
-  · 각 약품의 치료 목적 명시
-  · 최초 진단일 + 마지막 진료일 + 합산 투약일수 표시
-  · 처방 이력 날짜별 표시
-- 수술: surgeries_5y 사용. 물리치료/신경차단/주사 절대 수술로 분류 금지
-- 7일 이상 치료와 30일 이상 투약이 같은 질병이면 고지항목에 함께 표시
+■ section4: 약물 상시복용
+- 혈압강하제, 신경안정제, 수면제, 마약성진통제 등
+- 최초처방일, 최근처방일 반드시 표시
+- 현재 복용 중 여부
 
-■ item5 (11대 질병)
-- 고혈압/당뇨/협심증 등 11대 질병은 여기에만 표시
-- 초진일, 마지막 진료일, 통원 횟수, 투약 내역 상세히 표시
+■ section5: 11대 질병
+- 암, 백혈병, 고혈압, 협심증, 심근경색, 심장판막증, 간경화, 뇌졸중, 당뇨, 에이즈, 항문질환
+- 해당 있으면 초진일/최종진료일/통원횟수/투약/수술 상세 표시
 
 반드시 순수 JSON만 반환. {{ 로 시작 }} 로 끝. 절대 ```json 붙이지 말 것.
 
 {{
-  "item1": {{
-    "질병확정진단": {{"해당": false, "목록": [{{"질병": "한글질병명", "코드": "AM513", "날짜": "YYYY-MM-DD", "병원": "병원명", "주의": false}}]}},
-    "질병의심소견": {{"해당": false, "목록": []}},
-    "치료": {{"해당": false, "목록": [{{"질병": "한글질병명", "코드": "코드", "날짜": "YYYY-MM-DD", "병원": "병원명", "내용": "치료내용"}}]}},
-    "입원": {{"해당": false, "목록": []}},
-    "수술": {{"해당": false, "목록": [{{"질병": "한글질병명", "수술명": "수술명", "날짜": "YYYY-MM-DD", "병원": "병원명"}}]}},
-    "투약": {{"해당": false, "목록": [{{"질병": "한글질병명", "약품목록": [{{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "투약일수": 30}}], "날짜": "YYYY-MM-DD", "병원": "병원명"}}]}}
-  }},
-  "item2": {{
-    "마약성진통제": {{"해당": false, "목록": []}},
-    "혈압강하제": {{"해당": false, "목록": [{{"약물명": "약품명", "성분명": "성분명", "복용시작": "날짜", "복용중": false}}]}},
-    "신경안정제": {{"해당": false, "목록": []}},
-    "수면제": {{"해당": false, "목록": []}},
-    "각성제": {{"해당": false, "목록": []}},
-    "진통제": {{"해당": false, "목록": []}}
-  }},
-  "item3": {{
-    "해당": false,
-    "목록": [{{
-      "질병": "한글질병명",
-      "코드": "코드",
+  "section1": [
+    {{
+      "질병명": "한글질병명 (코드1, 코드2)",
+      "진료일": "YYYY-MM-DD",
+      "최종진료일": "YYYY-MM-DD",
+      "통원횟수": 0,
+      "병원": "병원명",
+      "입원": false,
+      "수술": "",
+      "투약": [
+        {{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "투약일수": 0, "최초처방일": "YYYY-MM-DD"}}
+      ],
+      "치료내역": "구체적인 치료 내용"
+    }}
+  ],
+  "section2": [
+    {{
+      "질병명": "한글질병명 (코드)",
       "최초검사일": "YYYY-MM-DD",
       "추가검사일": "YYYY-MM-DD",
       "최초검사내용": "X-ray, 혈액검사 등",
       "추가검사내용": "MRI, 근전도 등",
-      "구분": "추가검사 또는 재검사",
-      "고지사유": "왜 고지해야 하는지 구체적으로",
-      "주의": false
-    }}]
-  }},
-  "item4": {{
-    "입원": {{"해당": false, "목록": [{{"질병": "질병명", "입원일": "날짜", "퇴원일": "날짜", "병원": "병원명", "일수": 0}}]}},
-    "수술": {{"해당": false, "목록": [{{"질병": "질병명", "수술명": "수술명 구체적으로", "날짜": "날짜", "병원": "병원명"}}]}},
-    "시술처치": {{"해당": false, "목록": [{{"내용": "시술명·병원·날짜"}}]}},
-    "질병별내역": [{{"
-      질병명": "한글질병명 (코드1, 코드2)",
+      "구분": "추가검사 또는 재검사"
+    }}
+  ],
+  "section3": [
+    {{
+      "질병명": "한글질병명 (코드1, 코드2)",
       "초진일": "YYYY-MM-DD",
       "최종진료일": "YYYY-MM-DD",
       "통원횟수": 0,
-      "고지항목": ["7일이상치료", "30일이상투약"],
-      "투약내역": [{{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "처방이력": [{{"날짜": "날짜", "일수": 0}}], "합산일수": 0}}]
-    }}]
+      "입원": [{{"날짜": "YYYY-MM-DD", "병원": "병원명", "일수": 0}}],
+      "수술": [{{"수술명": "구체적인 수술명 및 부위", "날짜": "YYYY-MM-DD", "병원": "병원명"}}],
+      "투약": [{{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "합산일수": 0}}],
+      "치료내역": "구체적인 치료 내용",
+      "고지항목": ["7일이상치료", "30일이상투약", "입원", "수술"] 
+    }}
+  ],
+  "section4": [
+    {{
+      "약물분류": "혈압강하제",
+      "약품명": "약품명",
+      "성분명": "성분명",
+      "최초처방일": "YYYY-MM-DD",
+      "최근처방일": "YYYY-MM-DD",
+      "복용중": true
+    }}
+  ],
+  "section5": {{
+    "해당목록": ["고혈압", "협심증"],
+    "상세": [
+      {{
+        "질병명": "협심증 (AI209, AI2088)",
+        "초진일": "YYYY-MM-DD",
+        "최종진료일": "YYYY-MM-DD",
+        "통원횟수": 0,
+        "입원": [{{"날짜": "YYYY-MM-DD", "병원": "병원명", "일수": 0}}],
+        "수술": [],
+        "투약": [{{"약품명": "약품명", "용도": "치료목적", "합산일수": 0}}],
+        "검사내용": "심초음파, 흉부CT 등"
+      }}
+    ]
   }},
-  "item5": {{
-    "해당": false,
-    "목록": {{
-      "암": "해당없음",
-      "백혈병": "해당없음",
-      "고혈압": "해당없음",
-      "협심증": "해당없음",
-      "심근경색": "해당없음",
-      "심장판막증": "해당없음",
-      "간경화증": "해당없음",
-      "뇌졸중": "해당없음",
-      "당뇨": "해당없음",
-      "에이즈HIV": "해당없음",
-      "항문질환": "해당없음"
-    }},
-    "상세": [{{"
-      질병명": "협심증 (AI209, AI2088)",
-      "초진일": "YYYY-MM-DD",
-      "최종진료일": "YYYY-MM-DD",
-      "통원횟수": 0,
-      "입원": [{{"날짜": "날짜", "일수": 0, "병원": "병원명"}}],
-      "수술": [],
-      "투약내역": [{{"약품명": "약품명", "용도": "치료목적", "합산일수": 0}}],
-      "검사내용": "심초음파, 흉부CT 등"
-    }}]
-  }},
-  "signal": {{"status": "green", "reason": "판단 근거"}},
-  "요약": ["고지필요 핵심사항 구체적으로"]
+  "요약": ["핵심 병력 요약 1", "핵심 병력 요약 2"]
 }}"""
 
     client=anthropic.Anthropic(api_key=api_key)
@@ -591,430 +598,178 @@ def analyze(api_key, customer_name, structured, all_text):
         messages=[{"role":"user","content":prompt}]
     )
     raw=msg.content[0].text.strip()
-    # JSON 코드블록 제거
     if raw.startswith('```'):
         raw=re.sub(r'^```[a-zA-Z]*\n?','',raw)
         raw=re.sub(r'\n?```$','',raw).strip()
-    # JSON 앞뒤 불필요한 텍스트 제거
     js=raw.find('{'); je=raw.rfind('}')
     if js!=-1 and je!=-1: raw=raw[js:je+1]
     return json.loads(raw)
 
+
 # ===== 렌더링 =====
 
-def make_pdf_summary(r, customer_name, today_str, cost_stats):
-    """고객용 요약본 PDF 생성"""
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
-    from reportlab.lib import colors
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    import os
-
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4,
-        rightMargin=15*mm, leftMargin=15*mm,
-        topMargin=15*mm, bottomMargin=15*mm)
-
-    fn = 'Helvetica'
-    import os as _os
-    # 폰트 경로 우선순위: 레포 내 폰트 → 시스템 폰트
-    _base = _os.path.dirname(_os.path.abspath(__file__))
-    font_paths = [
-        _os.path.join(_base, 'NanumGothic.ttf'),
-        _os.path.join(_base, 'fonts', 'NanumGothic.ttf'),
-        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
-        'C:/Windows/Fonts/malgun.ttf',
-        'C:/Windows/Fonts/NanumGothic.ttf',
-    ]
-    for fp in font_paths:
-        try:
-            if _os.path.exists(fp):
-                pdfmetrics.registerFont(TTFont('K', fp))
-                fn = 'K'; break
-        except: pass
-
-    def ps(n, sz, c='#1a2744', sb=0, sa=3):
-        return ParagraphStyle(n, fontName=fn, fontSize=sz,
-            textColor=colors.HexColor(c), spaceBefore=sb, spaceAfter=sa)
-
-    story = []
-    i1=r.get('item1',{}); i2=r.get('item2',{}); i3=r.get('item3',{})
-    i4=r.get('item4',{}); i5=r.get('item5',{}); signal=r.get('signal',{})
-    summary=r.get('요약',[])
-
-    sig = signal.get('status','green')
-    sig_t = {'red':'인수 거절 가능성','yellow':'조건부 가입 가능','green':'일반심사 가능'}.get(sig,'일반심사 가능')
-
-    def row(txt, c='#374151', sz=10, sb=0, sa=2):
-        story.append(Paragraph(txt, ps('r', sz, c, sb, sa)))
-    def sec(title, sb=8):
-        story.append(Paragraph(title, ps('h', 12, '#1a2744', sb, 4)))
-        story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e5e7eb'), spaceAfter=4))
-    def none_row():
-        story.append(Paragraph('해당 없음', ps('n', 10, '#16a34a', 0, 4)))
-
-    # 헤더
-    story.append(Paragraph(f'알릴 의무 고지사항 확인서', ps('t', 18, '#1a2744', 0, 3)))
-    story.append(Paragraph(f'{customer_name} 고객님   |   분석일: {today_str}   |   {sig_t}', ps('s', 10, '#6b7280', 0, 6)))
-    story.append(HRFlowable(width="100%", thickness=3, color=colors.HexColor('#1a2744'), spaceAfter=10))
-
-    # 1번 - 3개월
-    has1 = any(i1.get(k,{}).get('해당') for k in ["질병확정진단","질병의심소견","치료","입원","수술","투약"])
-    sec("1. 최근 3개월 이내 의료행위")
-    if has1:
-        for key in ["질병확정진단","치료","수술","투약"]:
-            data = i1.get(key,{})
-            if not data.get('해당'): continue
-            for item in data.get('목록',[]):
-                if key == "투약":
-                    row(f'  · {item.get("약품명","")} — {item.get("용도","")} — {item.get("투약일수",0)}일', '#dc2626')
-                elif key == "수술":
-                    row(f'  · {item.get("수술명","")} — {item.get("날짜","")}', '#dc2626')
-                else:
-                    row(f'  · {item.get("질병","")} ({item.get("코드","")}) — {item.get("날짜","")} — {item.get("병원","")}', '#dc2626')
-    else:
-        none_row()
-
-    # 2번
-    has2 = any(i2.get(k,{}).get('해당') for k in ["마약성진통제","혈압강하제","신경안정제","수면제"])
-    sec("2. 최근 3개월 약물 상시복용", 6)
-    if has2:
-        for key in ["마약성진통제","혈압강하제","신경안정제","수면제","각성제","진통제"]:
-            data = i2.get(key,{})
-            if not data.get('해당'): continue
-            for item in data.get('목록',[]):
-                row(f'  · {item.get("약물명","")} ({item.get("성분명","")}) — {"복용 중" if item.get("복용중") else "과거 복용"}', '#dc2626')
-    else:
-        none_row()
-
-    # 3번
-    sec("3. 최근 1년 이내 재검사/추가검사", 6)
-    if i3.get('해당'):
-        for d in i3.get('목록',[]):
-            row(f'  · {d.get("질병","")} ({d.get("코드","")}) — {d.get("총방문횟수",0)}회 — {d.get("검사내용","")}', '#dc2626')
-    else:
-        none_row()
-
-    # 4번 - 카테고리별
-    sec("4. 최근 5년 이내 의료행위", 6)
-    cats = [
-        ("입원", i4.get('입원',{})),
-        ("수술 (제왕절개 포함)", i4.get('수술',{})),
-        ("계속하여 7일 이상 치료", i4.get('치료7일',{})),
-        ("계속하여 30일 이상 투약", i4.get('투약30일',{})),
-    ]
-    for cat_name, data in cats:
-        has = data.get('해당', False)
-        if has:
-            row(f'  [{cat_name}]', '#991b1b', 10, 2, 1)
-            for item in data.get('목록', []):
-                if not isinstance(item, dict): continue
-                if '수술' in cat_name:
-                    row(f'    · {item.get("수술명","")} — {item.get("날짜","")} — {item.get("병원","")}', '#dc2626')
-                elif '투약' in cat_name:
-                    row(f'    · {item.get("약품명","")} ({item.get("성분명","")}) — 합계 {item.get("합산일수",0)}일', '#dc2626')
-                elif '입원' in cat_name:
-                    row(f'    · {item.get("질병","")} — {item.get("입원일","")}~{item.get("퇴원일","")} — {item.get("일수",0)}일', '#dc2626')
-                else:
-                    row(f'    · {item.get("질병","")} ({item.get("코드","")}) — {item.get("총방문횟수",0)}회', '#dc2626')
-        else:
-            row(f'  [{cat_name}] 해당 없음', '#16a34a', 10, 2, 1)
-
-    # 5번
-    sec("5. 최근 5년 이내 10대 질병", 6)
-    diseases_5=['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']
-    d5map=i5.get('목록',{})
-    bad=[d for d in diseases_5 if '해당없음' not in str(d5map.get(d,'해당없음')) and '없음' not in str(d5map.get(d,'해당없음'))]
-    ok=[d for d in diseases_5 if d not in bad]
-    if bad: row(f'  해당 있음: {", ".join(bad)}', '#dc2626')
-    row(f'  해당 없음: {", ".join(ok)}', '#16a34a')
-
-    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#e5e7eb'), spaceBefore=10, spaceAfter=6))
-
-    # 의료비 섹션
-    if cost_stats:
-        sec("6. 연도별 본인부담 의료비", 4)
-        row(f'  총 본인부담금: {cost_stats["total_paid"]:,}원   |   연평균: {cost_stats["avg_paid"]:,}원   |   총 진료: {cost_stats["total_count"]}건', '#1a2744', 10, 0, 4)
-        for y, d in cost_stats['year'].items():
-            row(f'  {y}년  {d["count"]}건  →  본인부담 {d["paid"]:,}원  (보험혜택 {d["ins"]:,}원)', '#374151', 10, 0, 2)
-
-        story.append(Spacer(1, 4*mm))
-        sec("7. 질병별 의료비 상위 5개", 4)
-        for i, (name, d) in enumerate(cost_stats['top5']):
-            row(f'  {i+1}. {name} ({d["code"]})  {d["count"]}회  →  {d["paid"]:,}원', '#374151', 10, 0, 2)
-
-    # 요약
-    story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#c9a84c'), spaceBefore=10, spaceAfter=6))
-    story.append(Paragraph('고지 필요 핵심 요약', ps('sh', 12, '#1a2744', 0, 5)))
-    for s in summary:
-        row(f'  ▶ {s}', '#1a2744', 10, 0, 3)
-
-    story.append(Spacer(1, 6*mm))
-    story.append(Paragraph('본 자료는 심평원 기본진료정보를 기반으로 AI가 분석한 참고용 자료입니다.   리치앤아이 · 글로벌금융판매',
-        ps('f', 8, '#9ca3af', 0, 0)))
-
-    doc.build(story)
-    buf.seek(0)
-    return buf
-
 def render(r, customer_name, today_str):
-    i1=r.get('item1',{}); i2=r.get('item2',{})
-    i3=r.get('item3',{}); i4=r.get('item4',{})
-    i5=r.get('item5',{}); signal=r.get('signal',{})
+    s1=r.get('section1',[])
+    s2=r.get('section2',[])
+    s3=r.get('section3',[])
+    s4=r.get('section4',[])
+    s5=r.get('section5',{})
     summary=r.get('요약',[])
 
-    # 고지 항목 수 계산
-    alerts=[]
-    for k in ["질병확정진단","질병의심소견","치료","입원","수술","투약"]:
-        if i1.get(k,{}).get('해당'): alerts.append(k)
-    for k in ["마약성진통제","혈압강하제","신경안정제","수면제","각성제","진통제"]:
-        if i2.get(k,{}).get('해당'): alerts.append(k)
-    if i3.get('해당'): alerts.append("재검사")
-    if i4.get('입원',{}).get('해당'): alerts.append("입원")
-    if i4.get('수술',{}).get('해당'): alerts.append("수술")
-    if i4.get('질병별내역'): alerts.append("치료/투약")
-    if i5.get('해당'): alerts.append("11대질병")
-
-    sig=signal.get('status','green')
-    sig_map={'red':('🔴','인수 거절 가능성','#fef2f2','#dc2626'),
-             'yellow':('🟡','조건부 가입 가능','#fffbeb','#f59e0b'),
-             'green':('🟢','일반심사 가능','#f0fdf4','#16a34a')}
-    si,st2,sbg,sfc=sig_map.get(sig,sig_map['green'])
-
+    # 상단 배너
     st.markdown(f"""
     <div class="top-banner">
         <div class="banner-title">🏥 알릴 의무 고지사항 확인서</div>
         <div class="banner-customer">👤 {customer_name} 고객님</div>
         <div class="banner-sub">분석일: {today_str} · 리치앤아이 · 글로벌금융판매</div>
-        <div>
-            {'<span class="badge-alert">🚨 고지 필요 '+str(len(alerts))+'가지</span>' if alerts else '<span class="badge-ok">✅ 고지 필요 없음</span>'}
-            <span class="badge-signal" style="background:{sbg};color:{sfc};">{si} {st2}</span>
-        </div>
     </div>
     """, unsafe_allow_html=True)
 
+    def disease_box(title, lines, color='#1a2744'):
+        """심플 병력 박스 렌더링"""
+        lines_html = ''.join([f'<div style="font-size:13px;color:#374151;padding:3px 0;border-bottom:1px solid #f3f4f6;">{l}</div>' for l in lines if l])
+        st.markdown(f"""
+        <div style="border:1.5px solid #e8eaf0;border-radius:10px;margin-bottom:10px;overflow:hidden;">
+            <div style="background:{color};padding:10px 14px;">
+                <div style="color:white;font-size:14px;font-weight:800;">{title}</div>
+            </div>
+            <div style="padding:10px 14px;background:white;">{lines_html}</div>
+        </div>""", unsafe_allow_html=True)
+
     # ===== 섹션 1: 최근 3개월 이내 =====
-    has1=any(i1.get(k,{}).get('해당') for k in ["질병확정진단","질병의심소견","치료","입원","수술","투약"])
-    if has1:
-        st.markdown('<div class="sec-title"><span class="sec-num">1</span>최근 3개월 이내 의료행위</div>', unsafe_allow_html=True)
-        for key in ["질병확정진단","질병의심소견","치료","입원","수술","투약"]:
-            data=i1.get(key,{}); has=data.get('해당',False)
-            if not has: continue
-            st.markdown(f"<div class='item-title'>{key}</div>", unsafe_allow_html=True)
-            for item in data.get('목록',[]):
-                if key=="투약":
-                    # 새 구조: 약품목록 배열 (질병별 묶음)
-                    drug_list=item.get('약품목록',[])
-                    if drug_list:
-                        drugs_html=''.join([
-                            f"<div style='padding:4px 0;border-bottom:1px solid #f3f4f6;'>"
-                            f"<span style='font-weight:700;color:#1a2744;'>{d.get('약품명','')}</span>"
-                            f"<span style='font-size:11px;color:#6b7280;margin-left:6px;'>({d.get('성분명','')})</span>"
-                            f"<span style='background:#eff6ff;color:#1d4ed8;font-size:11px;padding:1px 6px;border-radius:4px;margin-left:6px;'>{d.get('용도','')}</span>"
-                            f"<span style='float:right;font-weight:800;color:#dc2626;'>{d.get('투약일수',0)}일</span>"
-                            f"</div>"
-                            for d in drug_list
-                        ])
-                        st.markdown(f"""<div class="drug-card">
-                            <div class="dname" style="font-size:14px;">{item.get('질병','')}</div>
-                            <div style="font-size:12px;color:#6b7280;margin-bottom:8px;">{item.get('날짜','')} · {item.get('병원','')}</div>
-                            <div style="background:#f8f9ff;border-radius:8px;padding:8px 12px;">{drugs_html}</div>
-                            </div>""", unsafe_allow_html=True)
-                    else:
-                        # 구버전 호환 (단일 약품)
-                        days=item.get('투약일수',0)
-                        st.markdown(f"""<div class="drug-card {'drug-card-alert' if days>=30 else ''}">
-                            <div class="drug-name">{item.get('약품명','')}</div>
-                            <div class="drug-purpose">💊 {item.get('용도','')}</div>
-                            <div style="font-size:13px;color:#6b7280;">{item.get('질병','')} · {item.get('날짜','')}</div>
-                            </div>""", unsafe_allow_html=True)
-                elif key=="수술":
-                    st.markdown(f"""<div class="surgery-card"><div style="font-size:26px;">✂️</div>
-                        <div><div class="surgery-name">{item.get('수술명','')}</div>
-                        <div class="surgery-info">{item.get('질병','')} · {item.get('날짜','')} · {item.get('병원','')}</div>
-                        </div></div>""", unsafe_allow_html=True)
-                else:
-                    crit=item.get('주의',False) or is_critical(item.get('코드',''),item.get('질병',''))
-                    cb=f'<span class="code-badge">{item.get("코드","")}</span>' if item.get('코드') else ''
-                    wb='<span class="warn-badge">⚠ 주의</span>' if crit else ''
-                    extra=f'· {item.get("내용","")}' if item.get('내용') else ''
-                    st.markdown(f"""<div class="disease-card {'disease-card-warn' if crit else ''}">
-                        <div class="dname">{item.get('질병','')} {cb} {wb}</div>
-                        <div style="font-size:13px;color:#6b7280;">{item.get('날짜','')} · {item.get('병원','')} {extra}</div>
-                        </div>""", unsafe_allow_html=True)
+    if s1:
+        st.markdown('<div class="sec-title"><span class="sec-num">1</span>최근 3개월 이내 진료 기록</div>', unsafe_allow_html=True)
+        for item in s1:
+            if not isinstance(item, dict): continue
+            title = item.get('질병명','')
+            lines = []
+            lines.append(f"📅 진료일: {item.get('진료일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회")
+            lines.append(f"🏥 병원: {item.get('병원','')}")
+            if item.get('입원'): lines.append(f"🛏️ 입원: {item.get('입원')}")
+            if item.get('수술'): lines.append(f"✂️ 수술: {item.get('수술')}")
+            투약 = item.get('투약',[])
+            if 투약:
+                lines.append('💊 투약:')
+                for d in 투약:
+                    if not isinstance(d, dict): continue
+                    first = f" (최초처방: {d.get('최초처방일','')})" if d.get('최초처방일') else ''
+                    lines.append(f"　· {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')} — {d.get('투약일수',0)}일{first}")
+            if item.get('치료내역'): lines.append(f"🩺 치료: {item.get('치료내역','')}")
+            disease_box(title, lines)
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ===== 섹션 2: 최근 3개월 약물 상시복용 =====
-    has2=any(i2.get(k,{}).get('해당') for k in ["마약성진통제","혈압강하제","신경안정제","수면제","각성제","진통제"])
-    if has2:
-        st.markdown('<div class="sec-title"><span class="sec-num">2</span>최근 3개월 약물 상시복용</div>', unsafe_allow_html=True)
-        for key in ["마약성진통제","혈압강하제","신경안정제","수면제","각성제","진통제"]:
-            data=i2.get(key,{}); has=data.get('해당',False)
-            if not has: continue
-            st.markdown(f"<div class='item-title'>{key}</div>", unsafe_allow_html=True)
-            for item in data.get('목록',[]):
-                st.markdown(f"""<div class="drug-card drug-card-alert">
-                    <div class="drug-name">💊 {item.get('약물명','')}</div>
-                    <div class="drug-comp">성분: {item.get('성분명','')}</div>
-                    <div style="font-size:13px;color:#6b7280;">{'복용 중' if item.get('복용중') else '과거 복용'} · 시작일: {item.get('복용시작','')}</div>
-                    </div>""", unsafe_allow_html=True)
+    # ===== 섹션 2: 1년 이내 재검사/추가검사 =====
+    if s2:
+        st.markdown('<div class="sec-title"><span class="sec-num">2</span>최근 1년 이내 재검사 / 추가검사</div>', unsafe_allow_html=True)
+        for item in s2:
+            if not isinstance(item, dict): continue
+            구분 = item.get('구분','추가검사')
+            title = f"{item.get('질병명','')} [{구분}]"
+            lines = []
+            lines.append(f"📅 최초검사일: {item.get('최초검사일','')} | 추가검사일: {item.get('추가검사일','')}")
+            if item.get('최초검사내용'): lines.append(f"🔍 최초: {item.get('최초검사내용','')}")
+            if item.get('추가검사내용'): lines.append(f"🔎 추가: {item.get('추가검사내용','')}")
+            disease_box(title, lines, '#0891b2')
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ===== 섹션 3: 1년 이내 재검사/추가검사 =====
-    if i3.get('해당'):
-        st.markdown('<div class="sec-title"><span class="sec-num">3</span>최근 1년 이내 재검사 / 추가검사</div>', unsafe_allow_html=True)
-        acc_colors=['#1a2744','#2563eb','#7c3aed','#0891b2','#059669','#dc2626']
-        for idx,d in enumerate(i3.get('목록',[])):
-            code=d.get('코드',''); name=d.get('질병','')
-            crit=d.get('주의',False) or is_critical(code,name)
-            acc='#dc2626' if crit else acc_colors[idx%len(acc_colors)]
-            cb=f'<span class="code-badge">{code}</span>' if code else ''
-            wb='<span class="warn-badge">⚠ 주의</span>' if crit else ''
-            gubun=d.get('구분','추가검사')
-            gubun_color='#7c3aed' if '재검사' in gubun else '#0891b2'
-            st.markdown(f"""
-            <div class="disease-card {'disease-card-warn' if crit else ''}" style="border-left:5px solid {acc};">
-                <div class="dname">{name} {cb} {wb}
-                    <span style="background:{gubun_color};color:white;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:8px;">{gubun}</span>
-                </div>
-                <div class="stats-grid">
-                    <div class="stat-box"><div class="stat-label">최초 검사일</div><div class="stat-value" style="font-size:12px;">{d.get('최초검사일',d.get('최초진료일','-'))}</div></div>
-                    <div class="stat-box"><div class="stat-label">추가 검사일</div><div class="stat-value" style="font-size:12px;">{d.get('추가검사일',d.get('마지막진료일','-'))}</div></div>
-                </div>
-                <div class="recheck-box">
-                    🔍 최초 검사: {d.get('최초검사내용',d.get('검사내용',''))}<br>
-                    🔎 추가 검사: {d.get('추가검사내용','')}<br>
-                    📌 고지 사유: {d.get('고지사유','')}
-                </div>
-            </div>""", unsafe_allow_html=True)
+    # ===== 섹션 3: 5년 이내 병력 =====
+    if s3:
+        st.markdown('<div class="sec-title"><span class="sec-num">3</span>최근 5년 이내 병력</div>', unsafe_allow_html=True)
+        for item in s3:
+            if not isinstance(item, dict): continue
+            고지항목 = item.get('고지항목',[])
+            고지str = ' · '.join([f'⚠️{g}' for g in 고지항목]) if 고지항목 else ''
+            title = f"{item.get('질병명','')}{'  '+고지str if 고지str else ''}"
+            lines = []
+            lines.append(f"📅 초진: {item.get('초진일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회")
+
+            # 입원
+            입원목록 = item.get('입원',[])
+            if 입원목록:
+                for h in 입원목록:
+                    if isinstance(h, dict):
+                        lines.append(f"🛏️ 입원: {h.get('날짜','')} · {h.get('병원','')} · {h.get('일수',0)}일")
+                    elif h:
+                        lines.append(f"🛏️ 입원: {h}")
+            else:
+                lines.append("🛏️ 입원: 없음")
+
+            # 수술
+            수술목록 = item.get('수술',[])
+            if 수술목록:
+                for s in 수술목록:
+                    if isinstance(s, dict):
+                        lines.append(f"✂️ 수술: {s.get('수술명','')} · {s.get('날짜','')} · {s.get('병원','')}")
+                    elif s:
+                        lines.append(f"✂️ 수술: {s}")
+            else:
+                lines.append("✂️ 수술: 없음")
+
+            # 투약
+            투약목록 = item.get('투약',[])
+            if 투약목록:
+                lines.append('💊 투약 (30일 이상):')
+                for d in 투약목록:
+                    if isinstance(d, dict):
+                        lines.append(f"　· {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')} — 합계 {d.get('합산일수',0)}일")
+
+            # 치료내역
+            if item.get('치료내역'):
+                lines.append(f"🩺 치료: {item.get('치료내역','')}")
+
+            color = '#dc2626' if any(k in 고지항목 for k in ['입원','수술']) else '#1a2744'
+            disease_box(title, lines, color)
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ===== 섹션 4: 5년 이내 입원/수술 =====
-    has_inop=i4.get('입원',{}).get('해당') or i4.get('수술',{}).get('해당')
-    if has_inop:
-        st.markdown('<div class="sec-title"><span class="sec-num">4</span>최근 5년 이내 입원 / 수술</div>', unsafe_allow_html=True)
-        if i4.get('입원',{}).get('해당'):
-            st.markdown("<div class='item-title'>입원</div>", unsafe_allow_html=True)
-            for item in i4['입원'].get('목록',[]):
-                st.markdown(f"""<div class="disease-card disease-card-warn">
-                    <div class="dname">🏥 {item.get('질병','')}</div>
-                    <div style="font-size:13px;color:#6b7280;">{item.get('입원일','')} ~ {item.get('퇴원일','')} · {item.get('병원','')} · {item.get('일수',0)}일</div>
-                    </div>""", unsafe_allow_html=True)
-        if i4.get('수술',{}).get('해당'):
-            st.markdown("<div class='item-title'>수술 (제왕절개 포함)</div>", unsafe_allow_html=True)
-            for item in i4['수술'].get('목록',[]):
-                st.markdown(f"""<div class="surgery-card"><div style="font-size:26px;">✂️</div>
-                    <div><div class="surgery-name">{item.get('수술명','')}</div>
-                    <div class="surgery-info">{item.get('질병','')} · {item.get('날짜','')} · {item.get('병원','')}</div>
-                    </div></div>""", unsafe_allow_html=True)
-        proc=i4.get('시술처치',{})
-        if proc.get('해당') and proc.get('목록'):
-            st.markdown('<div class="proc-box"><div class="proc-title">⚠️ 시술·처치 (고지 권장)</div>', unsafe_allow_html=True)
-            for p in proc.get('목록',[]):
-                c=p.get('내용','') if isinstance(p,dict) else str(p)
-                st.markdown(f'<div class="proc-item"><span>•</span><span>{c}</span></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+    # ===== 섹션 4: 약물 상시복용 =====
+    if s4:
+        st.markdown('<div class="sec-title"><span class="sec-num">4</span>약물 상시복용</div>', unsafe_allow_html=True)
+        for item in s4:
+            if not isinstance(item, dict): continue
+            복용상태 = '현재 복용 중 🔴' if item.get('복용중') else '과거 복용'
+            title = f"💊 {item.get('약물분류','')} — {item.get('약품명','')}"
+            lines = []
+            lines.append(f"성분명: {item.get('성분명','')}")
+            lines.append(f"최초처방일: {item.get('최초처방일','')} | 최근처방일: {item.get('최근처방일','')}")
+            lines.append(f"복용 상태: {복용상태}")
+            disease_box(title, lines, '#7c3aed')
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ===== 섹션 5: 5년 이내 치료/투약 (질병별) =====
-    disease_list=i4.get('질병별내역',[])
-    if disease_list:
-        st.markdown('<div class="sec-title"><span class="sec-num">5</span>최근 5년 이내 치료 / 투약</div>', unsafe_allow_html=True)
-        for d in disease_list:
-            if not isinstance(d,dict): continue
-            dname_str=d.get('질병명','')
-            crit=is_critical('',dname_str)
-            고지항목=d.get('고지항목',[])
-            고지태그=''.join([
-                f'<span style="background:{"#fee2e2" if "7일" in g else "#fffbeb"};color:{"#991b1b" if "7일" in g else "#92400e"};font-size:11px;padding:2px 8px;border-radius:4px;margin-right:4px;">⚠️ {g}</span>'
-                for g in 고지항목
-            ])
-            투약내역=d.get('투약내역',[])
-            투약html=''
-            for drug in 투약내역:
-                if not isinstance(drug,dict): continue
-                처방html=''.join([
-                    f"<div style='display:flex;justify-content:space-between;font-size:12px;padding:2px 0;color:#6b7280;'>"
-                    f"<span>{p.get('날짜','')}</span><span style='font-weight:700;color:#374151;'>{p.get('일수',p.get('투약일수',0))}일</span></div>"
-                    for p in drug.get('처방이력',drug.get('처방내역',[]))
-                ])
-                투약html+=f"""
-                <div style="border:1px solid #e8eaf0;border-radius:8px;padding:10px 14px;margin-bottom:8px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                        <div>
-                            <span style="font-weight:800;color:#1a2744;font-size:14px;">{drug.get('약품명','')}</span>
-                            <span style="font-size:11px;color:#6b7280;margin-left:6px;">({drug.get('성분명','')})</span>
-                        </div>
-                        <span style="background:#fef3c7;color:#92400e;font-size:12px;padding:2px 8px;border-radius:4px;">{drug.get('용도','')}</span>
-                    </div>
-                    <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">{처방html}</div>
-                    <div style="text-align:right;font-size:16px;font-weight:900;color:#dc2626;margin-top:6px;">합계: {drug.get('합산일수',0)}일</div>
-                </div>"""
-            card_class = 'disease-card-warn' if crit else ''
-            header_html = f'''<div class="disease-card {card_class}" style="margin-bottom:4px;">
-                <div style="border-bottom:2px solid #e8eaf0;padding-bottom:10px;margin-bottom:10px;">
-                    <div class="dname">{dname_str}</div>
-                    <div style="margin-top:6px;">{고지태그}</div>
-                </div>
-                <div class="stats-grid">
-                    <div class="stat-box"><div class="stat-label">초진일</div><div class="stat-value" style="font-size:12px;">{d.get("초진일","-")}</div></div>
-                    <div class="stat-box"><div class="stat-label">최종 진료일</div><div class="stat-value" style="font-size:12px;">{d.get("최종진료일","-")}</div></div>
-                    <div class="stat-box"><div class="stat-label">통원 횟수</div><div class="stat-value stat-blue">{d.get("통원횟수",0)}회</div></div>
-                </div>
-            </div>'''
-            st.markdown(header_html, unsafe_allow_html=True)
-            if 투약html:
-                st.markdown(투약html, unsafe_allow_html=True)
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    # ===== 섹션 5: 11대 질병 =====
+    st.markdown('<div class="sec-title"><span class="sec-num">5</span>최근 5년 이내 11대 질병</div>', unsafe_allow_html=True)
+    diseases_11=['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']
+    해당목록 = s5.get('해당목록',[]) if isinstance(s5, dict) else []
+    미해당 = [d for d in diseases_11 if d not in 해당목록]
 
-    # ===== 섹션 6: 11대 질병 =====
-    diseases_5=['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']
-    d5map=i5.get('목록',{})
-    ok_list=[d for d in diseases_5 if '해당없음' in str(d5map.get(d,'해당없음')) or '없음' in str(d5map.get(d,'해당없음'))]
-    bad_list=[d for d in diseases_5 if d not in ok_list]
-    st.markdown('<div class="sec-title"><span class="sec-num">6</span>최근 5년 이내 11대 질병</div>', unsafe_allow_html=True)
-    if bad_list:
-        st.markdown(f"<div style='margin-bottom:6px;'><b style='color:#dc2626;font-size:14px;'>⚠️ 해당 있음:</b></div>", unsafe_allow_html=True)
-        st.markdown('<div class="d5-row">'+''.join([f'<span class="d5-bad">⚠️ {d}</span>' for d in bad_list])+'</div>', unsafe_allow_html=True)
-        # 11대 질병 상세 내역
-        상세=i5.get('상세',[])
-        for d in 상세:
-            if not isinstance(d,dict): continue
-            입원html=''.join([f"<div style='font-size:12px;color:#6b7280;'>{h.get('날짜','')} · {h.get('병원','')} · {h.get('일수',0)}일 입원</div>" for h in d.get('입원',[])])
-            수술html=''.join([f"<div style='font-size:12px;color:#dc2626;font-weight:700;'>✂️ {s}</div>" for s in d.get('수술',[])])
-            투약html=''.join([
-                f"<div style='font-size:12px;padding:2px 0;'><span style='font-weight:700;color:#1a2744;'>{drug.get('약품명','')}</span>"
-                f"<span style='color:#6b7280;margin-left:4px;'>({drug.get('용도','')})</span>"
-                f"<span style='float:right;font-weight:800;color:#dc2626;'>{drug.get('합산일수',0)}일</span></div>"
-                for drug in d.get('투약내역',[]) if isinstance(drug,dict)
-            ])
-            st.markdown(f"""
-            <div class="disease-card disease-card-warn" style="margin-bottom:10px;">
-                <div class="dname">{d.get('질병명','')}</div>
-                <div class="stats-grid">
-                    <div class="stat-box"><div class="stat-label">초진일</div><div class="stat-value" style="font-size:12px;">{d.get('초진일','-')}</div></div>
-                    <div class="stat-box"><div class="stat-label">최종 진료일</div><div class="stat-value" style="font-size:12px;">{d.get('최종진료일','-')}</div></div>
-                    <div class="stat-box"><div class="stat-label">통원 횟수</div><div class="stat-value stat-blue">{d.get('통원횟수',0)}회</div></div>
-                </div>
-                {입원html}{수술html}
-                {f'<div style="background:#f8f9ff;border-radius:8px;padding:8px 12px;margin-top:8px;">{투약html}</div>' if 투약html else ''}
-                {f'<div style="font-size:12px;color:#374151;margin-top:6px;">🔬 {d.get("검사내용","")}</div>' if d.get("검사내용") else ''}
-            </div>""", unsafe_allow_html=True)
+    if 해당목록:
+        st.markdown(f"<div style='margin-bottom:8px;'><b style='color:#dc2626;font-size:14px;'>⚠️ 해당 있음:</b></div>", unsafe_allow_html=True)
+        st.markdown('<div class="d5-row">'+''.join([f'<span class="d5-bad">⚠️ {d}</span>' for d in 해당목록])+'</div>', unsafe_allow_html=True)
+        상세목록 = s5.get('상세',[]) if isinstance(s5, dict) else []
+        for item in 상세목록:
+            if not isinstance(item, dict): continue
+            title = item.get('질병명','')
+            lines = []
+            lines.append(f"📅 초진: {item.get('초진일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회")
+            for h in item.get('입원',[]):
+                if isinstance(h, dict): lines.append(f"🛏️ 입원: {h.get('날짜','')} · {h.get('병원','')} · {h.get('일수',0)}일")
+            for s in item.get('수술',[]):
+                if isinstance(s, dict): lines.append(f"✂️ 수술: {s.get('수술명','')}")
+                elif s: lines.append(f"✂️ 수술: {s}")
+            for d in item.get('투약',[]):
+                if isinstance(d, dict): lines.append(f"💊 {d.get('약품명','')} ({d.get('용도','')}) — {d.get('합산일수',0)}일")
+            if item.get('검사내용'): lines.append(f"🔬 검사: {item.get('검사내용','')}")
+            disease_box(title, lines, '#dc2626')
+
     st.markdown(f"<div style='margin:10px 0 6px;'><b style='color:#16a34a;font-size:14px;'>✅ 해당 없음:</b></div>", unsafe_allow_html=True)
-    st.markdown('<div class="d5-row">'+''.join([f'<span class="d5-ok">✅ {d}</span>' for d in ok_list])+'</div>', unsafe_allow_html=True)
+    st.markdown('<div class="d5-row">'+''.join([f'<span class="d5-ok">✅ {d}</span>' for d in 미해당])+'</div>', unsafe_allow_html=True)
 
-    # ===== 인쇄 버튼 =====
+    # 인쇄 버튼
     st.markdown('<div style="text-align:right;margin:16px 0;"><button onclick="window.print()" style="background:#1a2744;color:#c9a84c;border:none;border-radius:10px;padding:10px 24px;font-size:14px;font-weight:700;cursor:pointer;">🖨️ 인쇄 / PDF 저장</button></div>', unsafe_allow_html=True)
 
-    # ===== 요약 =====
+    # 요약
     if summary:
         summary_html=''.join([f'<div class="summary-item"><span class="summary-arrow">▶</span><span class="summary-text">{s}</span></div>' for s in summary])
-        st.markdown(f'<div class="summary-box"><div class="summary-title">📋 고지 필요 핵심 요약</div>{summary_html}</div>', unsafe_allow_html=True)
-
+        st.markdown(f'<div class="summary-box"><div class="summary-title">📋 핵심 병력 요약</div>{summary_html}</div>', unsafe_allow_html=True)
 
 
 def render_cost(stats):
@@ -1307,38 +1062,65 @@ if btn:
         procs5y=[p for p in filter_dates(detail,d5y,today) if p['type']=='procedure']
         inpat5y=[r for r in r5y if r.get('is_inpatient')]
 
+        # 3개월 이내 처방약 (최초처방일 포함)
+        rx_3m_list=[]
+        for rx_item in rx:
+            if rx_item.get('date','') >= d3.isoformat():
+                # 해당 약품의 최초 처방일 찾기
+                first_rx = min((r['date'] for r in rx if r.get('drug_name')==rx_item.get('drug_name')), default=rx_item['date'])
+                rx_3m_list.append({
+                    'date':rx_item['date'],
+                    'drug_name':rx_item['drug_name'],
+                    'component':rx_item['component'],
+                    'days':rx_item['days'],
+                    'hospital':rx_item['hospital'],
+                    'first_prescription':first_rx
+                })
+
         structured={
             'today':today_str,
             'd3':d3.isoformat(),'d1y':d1y.isoformat(),'d5y':d5y.isoformat(),
-            'records_3m':[{'date':r['date'],'hospital':r['hospital'],'code':r['code'],'disease':r['disease']} for r in r3m if not r['is_pharmacy']],
+            # 3개월 이내 진료 (약국 제외, 전체)
+            'records_3m':[{
+                'date':r['date'],'hospital':r['hospital'],
+                'code':r['code'],'disease':r['disease'],
+                'in_out':r.get('in_out','')
+            } for r in r3m if not r['is_pharmacy']],
+            # 3개월 이내 처방약 (최초처방일 포함)
+            'rx_3m': rx_3m_list,
+            # 1년 이내 2회 이상 방문 (재검사 판단용)
             'visits_1y_2plus':{
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last'],'hospitals':v['hospitals'][:3]}
                 for code,v in visits1y.items() if v['count']>=2
             },
+            # 1년 이내 전체 방문
             'visits_1y_all':{
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits1y.items()
             },
+            # 5년 이내 7회 이상 방문 (7일이상 치료 판단용)
             'visits_5y_7plus':{
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits5y.items() if v['count']>=7
             },
+            # 5년 이내 전체 방문 (상세 표시용)
+            'visits_5y_all':{
+                code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
+                for code,v in visits5y.items()
+            },
+            # 5년 이내 30일 이상 투약
             'drug_by_disease_5y':{
                 k:{'code':v['code'],'disease':v['disease'],'drug_name':v['drug_name'],
                    'component':v['component'],'total_days':v['total_days'],
                    'prescriptions':v['prescriptions']}
                 for k,v in drug5y.items()
             },
-            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:80]} for p in surgs5y[:15]],
-            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:60]} for p in procs5y[:20]],
-            'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease']} for r in inpat5y],
-            'rx_3m':[{
-                'date':rx['date'],
-                'drug_name':rx['drug_name'],
-                'component':rx['component'],
-                'days':rx['days'],
-                'hospital':rx['hospital']
-            } for rx in rx if rx.get('date','') >= d3.isoformat()]
+            # 5년 이내 수술 (상세 포함)
+            'surgeries_5y':[{'date':p['date'],'hospital':p['hospital'],'keyword':p['keyword'],'detail':p['detail'][:120]} for p in surgs5y[:20]],
+            # 5년 이내 시술/처치
+            'procedures_5y':[{'date':p['date'],'hospital':p['hospital'],'detail':p['detail'][:80]} for p in procs5y[:30]],
+            # 5년 이내 입원
+            'inpatient_5y':[{'date':r['date'],'hospital':r['hospital'],'disease':r['disease'],'in_out':r.get('in_out','')} for r in inpat5y],
         }
 
         with st.spinner("🤖 Claude AI 분석 중... (30초~1분 소요)"):
