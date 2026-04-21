@@ -122,8 +122,12 @@ st.markdown("""
     footer { display: none !important; }
     .stButton { display: none !important; }
     [data-testid="stToolbar"] { display: none !important; }
+    [data-testid="stDecoration"] { display: none !important; }
+    .no-print { display: none !important; }
     .main .block-container { padding: 0 !important; max-width: 100% !important; }
-    @page { margin: 10mm; size: A4; }
+    .stColumns { break-inside: avoid; }
+    div[data-testid="column"] { break-inside: avoid; }
+    @page { margin: 10mm; size: A4 portrait; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -247,16 +251,23 @@ def parse_detail(content):
                         d=str(row[1] or '').strip().replace('\n','')
                         h=str(row[2] or '').strip().replace('\n',' ')
                         if not re.match(r'\d{4}-\d{2}-\d{2}',d): continue
-                        full=' '.join([str(c or '').replace('\n',' ') for c in row])
-                        fc=full.replace(' ','')
-                        is_s=any(k in fc for k in SURGERY_KW)
-                        is_p=any(k in fc for k in NOT_SURGERY_KW)
+                        # 수술명 컬럼만 검색 (3번 이후 컬럼, 날짜/병원 제외)
+                        # 컬럼명("처치 및 수술") 제외하고 실제 수술명 컬럼만 검색
+                        detail_cols = [str(c or '').replace('\n',' ') for c in row[3:]]
+                        detail_text = ' '.join(detail_cols)
+                        dc = detail_text.replace(' ','')
+                        # 전체 행도 참고용으로 유지
+                        full = ' '.join([str(c or '').replace('\n',' ') for c in row])
+                        fc = full.replace(' ','')
+                        is_s = any(k in dc for k in SURGERY_KW)
+                        # NOT_SURGERY_KW는 실제 수술명 컬럼에서만 체크 (컬럼명 "처치및수술" 제외)
+                        is_p = any(k in dc for k in NOT_SURGERY_KW)
                         if is_s and not is_p:
-                            kw=next((k for k in SURGERY_KW if k in fc),'')
-                            detail=next((str(c or '').replace('\n',' ') for c in row if c and any(k in str(c).replace(' ','') for k in SURGERY_KW)),full[:80])
+                            kw=next((k for k in SURGERY_KW if k in dc),'')
+                            detail=next((str(c or '').replace('\n',' ') for c in row[3:] if c and any(k in str(c).replace(' ','') for k in SURGERY_KW)),detail_text[:120])
                             procs.append({'date':d,'hospital':h,'detail':detail,'keyword':kw,'type':'surgery'})
                         elif is_p:
-                            detail=next((str(c or '').replace('\n',' ') for c in row if c and any(k in str(c).replace(' ','') for k in NOT_SURGERY_KW)),full[:80])
+                            detail=next((str(c or '').replace('\n',' ') for c in row[3:] if c and any(k in str(c).replace(' ','') for k in NOT_SURGERY_KW)),detail_text[:80])
                             procs.append({'date':d,'hospital':h,'detail':detail,'type':'procedure'})
                     except: continue
             # 텍스트에서도 파싱 (테이블 미인식 대비)
@@ -271,7 +282,7 @@ def parse_detail(content):
                 if is_s and not is_p:
                     kw=next((k for k in SURGERY_KW if k in lc),'')
                     if not any(p.get('date')==ld and p.get('keyword')==kw for p in procs):
-                        procs.append({'date':ld,'hospital':'','detail':line[:100],'keyword':kw,'type':'surgery'})
+                        procs.append({'date':ld,'hospital':'','detail':line[:120],'keyword':kw,'type':'surgery'})
     return procs
 
 def parse_rx(content):
@@ -491,27 +502,44 @@ def analyze(api_key, customer_name, structured, all_text):
 
 ■ section1: 최근 3개월 이내 진료 기록
 - records_3m의 모든 항목을 질병코드별로 묶어서 표시
-- rx_3m의 모든 처방약을 표시 (최초처방일 포함)
+- rx_3m에서 date 필드가 3개월 기준일({d3_str}) 이후인 처방약만 표시
+  (최초처방일은 참고용으로만 표시, 필터링 기준은 처방 날짜 기준)
 - 의학적으로 관련 있는 질병코드는 하나로 묶기
-  예: AM501 + AM5422 → "경추 디스크 (AM501, AM5422)"
+  예: AM501 + AM5422 → "경추 디스크 (M501, M5422)"
+- 질병코드 표시 시 앞의 'A' 제거 (예: AM513 → M513)
 - 부위가 다른 경우 반드시 분리 (경추 ≠ 요추 ≠ 무릎)
 
 ■ section2: 최근 1년 이내 재검사/추가검사
-- visits_1y_2plus 기준
-- 최초 검사일이 1년 기준일({d1y_str}) 이후인 것만
-- 같은 날 여러 검사 → 최초 1회로 카운트
-- 세부진료 텍스트에서 검사명 구체적으로 파악
+- 기준: 검사 결과 이상 소견으로 추가 정밀검사를 받은 경우만 포함
+- 반드시 실제 검사 행위(MRI, CT, X-ray, 혈액검사, 근전도, 초음파, 내시경, 심전도 등)가 있어야 함
+- 포함 대상:
+  · 1차 검사(X-ray 등) 후 다른 날 추가 정밀검사(MRI, 근전도 등) 받은 경우
+  · 동일 질병으로 같은 검사를 다른 날 다시 받은 경우 (재검사)
+- 제외 대상:
+  · 단순 치료 통원 (물리치료, 주사치료, 드레싱 등)
+  · 이상 없는 정기검사/추적관찰
+  · 검사 없이 약만 처방받은 경우
+- 최초 검사일이 반드시 1년 기준일({d1y_str}) 이후여야 함
+- 세부진료 텍스트에서 실제 검사명 구체적으로 파악
+- 질병코드 표시 시 앞의 'A' 제거
 
 ■ section3: 최근 5년 이내 병력 (질병별 상세)
 - visits_5y_7plus + drug_by_disease_5y + surgeries_5y + inpatient_5y를 질병별로 통합
-- 관련 질병코드는 하나로 묶기
+- 관련 질병코드는 하나로 묶기 (예: AL239 + AL309 → 피부염으로 묶기)
+- 질병코드 표시 시 앞의 'A' 제거 (예: AM513 → M513, AL239 → L239)
 - 각 질병별로 아래 정보 전부 포함:
   · 초진일, 최종진료일, 통원횟수
   · 입원 여부 (날짜/병원/일수)
   · 수술 여부 (수술명 상세/날짜/병원/부위)
   · 투약 (약품명/성분명/치료목적/합산일수)
   · 치료내역 (어떤 치료를 받았는지 구체적으로)
-  · 해당 고지항목 (7일이상치료, 30일이상투약, 입원, 수술 중 해당되는 것)
+  · 해당 고지항목 규칙:
+    - "7일이상치료": visits_5y_7plus에 있는 것만 (통원 7회 이상인 것만, 절대 재계산 금지)
+    - "30일이상투약": drug_by_disease_5y에 있는 것만
+    - "입원": inpatient_5y에 있는 것
+    - "수술": surgeries_5y에 있는 것
+    - visits_5y_7plus에 없는 질병은 절대 "7일이상치료" 고지항목에 넣지 말 것
+- 결과 정렬: 수술 또는 입원 있는 것을 맨 앞에 배치
 
 ■ section4: 약물 상시복용
 - 혈압강하제, 신경안정제, 수면제, 마약성진통제 등
@@ -608,7 +636,7 @@ def analyze(api_key, customer_name, structured, all_text):
 
 # ===== 렌더링 =====
 
-def render(r, customer_name, today_str):
+def render(r, customer_name, today_str, cost_stats=None):
     s1=r.get('section1',[])
     s2=r.get('section2',[])
     s3=r.get('section3',[])
@@ -672,10 +700,16 @@ def render(r, customer_name, today_str):
             disease_box(title, lines, '#0891b2')
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # ===== 섹션 3: 5년 이내 병력 =====
+    # ===== 섹션 3: 5년 이내 병력 (수술/입원 먼저) =====
     if s3:
         st.markdown('<div class="sec-title"><span class="sec-num">3</span>최근 5년 이내 병력</div>', unsafe_allow_html=True)
-        for item in s3:
+        # 수술 또는 입원 있는 것 먼저, 나머지는 뒤에
+        def has_inop(item):
+            if not isinstance(item, dict): return False
+            고지 = item.get('고지항목',[])
+            return '입원' in 고지 or '수술' in 고지
+        s3_sorted = sorted(s3, key=lambda x: (0 if has_inop(x) else 1))
+        for item in s3_sorted:
             if not isinstance(item, dict): continue
             고지항목 = item.get('고지항목',[])
             고지str = ' · '.join([f'⚠️{g}' for g in 고지항목]) if 고지항목 else ''
@@ -763,13 +797,30 @@ def render(r, customer_name, today_str):
     st.markdown(f"<div style='margin:10px 0 6px;'><b style='color:#16a34a;font-size:14px;'>✅ 해당 없음:</b></div>", unsafe_allow_html=True)
     st.markdown('<div class="d5-row">'+''.join([f'<span class="d5-ok">✅ {d}</span>' for d in 미해당])+'</div>', unsafe_allow_html=True)
 
-    # 인쇄 버튼
-    st.markdown('<div style="text-align:right;margin:16px 0;"><button onclick="window.print()" style="background:#1a2744;color:#c9a84c;border:none;border-radius:10px;padding:10px 24px;font-size:14px;font-weight:700;cursor:pointer;">🖨️ 인쇄 / PDF 저장</button></div>', unsafe_allow_html=True)
+    # 인쇄 버튼 (Streamlit 방식 - React 충돌 방지)
+    st.markdown("""
+    <div class="no-print" style="text-align:right;margin:16px 0;">
+        <button id="print-btn" style="background:#1a2744;color:#c9a84c;border:none;border-radius:10px;padding:10px 24px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;">
+            🖨️ 인쇄 / PDF 저장
+        </button>
+    </div>
+    <script>
+        setTimeout(function() {
+            var btn = document.getElementById('print-btn');
+            if (btn) btn.addEventListener('click', function() { window.print(); });
+        }, 500);
+    </script>
+    """, unsafe_allow_html=True)
 
     # 요약
     if summary:
         summary_html=''.join([f'<div class="summary-item"><span class="summary-arrow">▶</span><span class="summary-text">{s}</span></div>' for s in summary])
         st.markdown(f'<div class="summary-box"><div class="summary-title">📋 핵심 병력 요약</div>{summary_html}</div>', unsafe_allow_html=True)
+
+
+    # ===== 의료비 섹션 (인쇄 포함) =====
+    if cost_stats:
+        render_cost(cost_stats)
 
 
 def render_cost(stats):
@@ -1138,10 +1189,7 @@ if btn:
                 st.error(f"분석 오류: {str(e)}")
 
 if st.session_state.result:
-    render(st.session_state.result,st.session_state.customer,st.session_state.today_str)
-    # 의료비 탭
-    if st.session_state.cost_stats:
-        render_cost(st.session_state.cost_stats)
+    render(st.session_state.result,st.session_state.customer,st.session_state.today_str,st.session_state.cost_stats)
 else:
     st.info("왼쪽에서 API 키, 고객 이름, PDF 업로드 후 분석 버튼을 눌러주세요.")
     st.markdown("""
