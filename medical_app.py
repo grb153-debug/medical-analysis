@@ -954,19 +954,21 @@ def render(r, customer_name, today_str):
                     <div style="background:#f8f9ff;border-radius:6px;padding:6px 10px;">{처방html}</div>
                     <div style="text-align:right;font-size:16px;font-weight:900;color:#dc2626;margin-top:6px;">합계: {drug.get('합산일수',0)}일</div>
                 </div>"""
-            st.markdown(f"""
-            <div class="disease-card {'disease-card-warn' if crit else ''}" style="margin-bottom:14px;">
+            card_class = 'disease-card-warn' if crit else ''
+            header_html = f'''<div class="disease-card {card_class}" style="margin-bottom:4px;">
                 <div style="border-bottom:2px solid #e8eaf0;padding-bottom:10px;margin-bottom:10px;">
                     <div class="dname">{dname_str}</div>
                     <div style="margin-top:6px;">{고지태그}</div>
                 </div>
                 <div class="stats-grid">
-                    <div class="stat-box"><div class="stat-label">초진일</div><div class="stat-value" style="font-size:12px;">{d.get('초진일','-')}</div></div>
-                    <div class="stat-box"><div class="stat-label">최종 진료일</div><div class="stat-value" style="font-size:12px;">{d.get('최종진료일','-')}</div></div>
-                    <div class="stat-box"><div class="stat-label">통원 횟수</div><div class="stat-value stat-blue">{d.get('통원횟수',0)}회</div></div>
+                    <div class="stat-box"><div class="stat-label">초진일</div><div class="stat-value" style="font-size:12px;">{d.get("초진일","-")}</div></div>
+                    <div class="stat-box"><div class="stat-label">최종 진료일</div><div class="stat-value" style="font-size:12px;">{d.get("최종진료일","-")}</div></div>
+                    <div class="stat-box"><div class="stat-label">통원 횟수</div><div class="stat-value stat-blue">{d.get("통원횟수",0)}회</div></div>
                 </div>
-                {투약html}
-            </div>""", unsafe_allow_html=True)
+            </div>'''
+            st.markdown(header_html, unsafe_allow_html=True)
+            if 투약html:
+                st.markdown(투약html, unsafe_allow_html=True)
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # ===== 섹션 6: 11대 질병 =====
