@@ -26,6 +26,162 @@ def get_url_params():
     except: return '', '', ''
 
 # ===== Firestore 저장 함수 =====
+
+# ===== HTML 생성 (Firestore 저장용) =====
+def generate_html(r, customer_name, today_str, cost_stats=None):
+    """결과를 HTML 문자열로 생성 (Firestore 저장용)"""
+    s1=r.get('section1',[])
+    s2=r.get('section2',[])
+    s3=r.get('section3',[])
+    s4=r.get('section4',[])
+    s5=r.get('section5',{})
+    summary=r.get('요약',[])
+
+    css = """<style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800;900&display=swap');
+    .mr-wrap{font-family:'Noto Sans KR','Malgun Gothic',sans-serif;max-width:900px;margin:0 auto;padding:16px;}
+    .mr-banner{background:linear-gradient(135deg,#0f1e3d,#1a2f5e);border-radius:16px;padding:20px 24px;margin-bottom:20px;border-bottom:4px solid #c9a84c;}
+    .mr-banner-title{color:#c9a84c;font-size:20px;font-weight:900;}
+    .mr-banner-customer{color:white;font-size:17px;font-weight:700;margin-top:6px;}
+    .mr-banner-sub{color:#8899bb;font-size:12px;margin-top:4px;}
+    .mr-sec-title{font-size:16px;font-weight:900;color:#1a2744;padding:12px 0 8px;border-bottom:3px solid #1a2744;margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+    .mr-sec-num{background:#1a2744;color:#c9a84c;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;flex-shrink:0;}
+    .mr-box{border:1.5px solid #e8eaf0;border-radius:10px;margin-bottom:10px;overflow:hidden;}
+    .mr-box-title{padding:10px 14px;}
+    .mr-box-title-text{color:white;font-size:14px;font-weight:800;}
+    .mr-box-body{padding:10px 14px;background:white;}
+    .mr-line{font-size:13px;color:#374151;padding:3px 0;border-bottom:1px solid #f3f4f6;}
+    .mr-divider{height:3px;background:linear-gradient(90deg,#1a2744,#c9a84c,#1a2744);border-radius:2px;margin:16px 0;}
+    .mr-d5-row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;}
+    .mr-d5-ok{background:#f0fdf4;border:1.5px solid #86efac;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;color:#16a34a;}
+    .mr-d5-bad{background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;color:#dc2626;}
+    .mr-summary-box{background:linear-gradient(135deg,#0f1e3d,#1a2f5e);border-radius:14px;padding:20px 24px;margin-top:20px;border-bottom:4px solid #c9a84c;}
+    .mr-summary-title{color:#c9a84c;font-size:15px;font-weight:900;margin-bottom:12px;}
+    .mr-summary-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.1);}
+    .mr-summary-arrow{color:#c9a84c;font-size:13px;font-weight:900;flex-shrink:0;}
+    .mr-summary-text{color:#e8d5a3;font-size:13px;line-height:1.6;}
+    .mr-stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}
+    .mr-stat-box{background:white;border-radius:8px;padding:10px 12px;border:1px solid #e8eaf0;text-align:center;}
+    .mr-stat-label{font-size:10px;color:#6b7280;font-weight:600;margin-bottom:3px;}
+    .mr-stat-value{font-size:15px;font-weight:900;color:#1a2744;}
+    </style>"""
+
+    def make_box(title, lines, color='#1a2744'):
+        lines_html = ''.join([f'<div class="mr-line">{l}</div>' for l in lines if l])
+        return f'<div class="mr-box"><div class="mr-box-title" style="background:{color};"><div class="mr-box-title-text">{title}</div></div><div class="mr-box-body">{lines_html}</div></div>'
+
+    html = css + '<div class="mr-wrap">'
+    html += f'<div class="mr-banner"><div class="mr-banner-title">병력 고지사항 확인서</div><div class="mr-banner-customer">{customer_name} 고객님</div><div class="mr-banner-sub">분석일: {today_str} · 리치앤아이 · 글로벌금융판매</div></div>'
+
+    if s1:
+        html += '<div class="mr-sec-title"><span class="mr-sec-num">1</span>최근 3개월 이내 진료 기록</div>'
+        for item in s1:
+            if not isinstance(item, dict): continue
+            lines = []
+            lines.append(f"진료일: {item.get('진료일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회")
+            lines.append(f"병원: {item.get('병원','')}")
+            if item.get('수술'): lines.append(f"수술: {item.get('수술')}")
+            for d in item.get('투약',[]):
+                if not isinstance(d, dict): continue
+                first = f" (최초처방: {d.get('최초처방일','')})" if d.get('최초처방일') else ''
+                lines.append(f"  · {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')} — {d.get('투약일수',0)}일{first}")
+            if item.get('치료내역'): lines.append(f"치료: {item.get('치료내역','')}")
+            html += make_box(item.get('질병명',''), lines)
+        html += '<div class="mr-divider"></div>'
+
+    if s2:
+        html += '<div class="mr-sec-title"><span class="mr-sec-num">2</span>최근 1년 이내 재검사 / 추가검사</div>'
+        for item in s2:
+            if not isinstance(item, dict): continue
+            lines = []
+            lines.append(f"최초검사일: {item.get('최초검사일','')} | 추가검사일: {item.get('추가검사일','')}")
+            if item.get('최초검사내용'): lines.append(f"최초: {item.get('최초검사내용','')}")
+            if item.get('추가검사내용'): lines.append(f"추가: {item.get('추가검사내용','')}")
+            html += make_box(f"{item.get('질병명','')} [{item.get('구분','추가검사')}]", lines, '#0891b2')
+        html += '<div class="mr-divider"></div>'
+
+    if s3:
+        html += '<div class="mr-sec-title"><span class="mr-sec-num">3</span>최근 5년 이내 병력</div>'
+        def has_inop(item):
+            고지 = item.get('고지항목',[]) if isinstance(item, dict) else []
+            return '입원' in 고지 or '수술' in 고지
+        s3_sorted = sorted(s3, key=lambda x: (0 if has_inop(x) else 1))
+        for item in s3_sorted:
+            if not isinstance(item, dict): continue
+            고지항목 = item.get('고지항목',[])
+            고지str = ' · '.join([f'[{g}]' for g in 고지항목]) if 고지항목 else ''
+            title = f"{item.get('질병명','')}{'  '+고지str if 고지str else ''}"
+            lines = [f"초진: {item.get('초진일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회"]
+            입원목록 = item.get('입원',[])
+            if 입원목록:
+                for h in 입원목록:
+                    if isinstance(h, dict): lines.append(f"입원: {h.get('날짜','')} · {h.get('병원','')} · {h.get('일수',0)}일")
+            else:
+                lines.append("입원: 없음")
+            수술목록 = item.get('수술',[])
+            if 수술목록:
+                for s in 수술목록:
+                    if isinstance(s, dict): lines.append(f"수술: {s.get('수술명','')} · {s.get('날짜','')} · {s.get('병원','')}")
+            else:
+                lines.append("수술: 없음")
+            for d in item.get('투약',[]):
+                if isinstance(d, dict): lines.append(f"  · {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')} — 합계 {d.get('합산일수',0)}일")
+            if item.get('치료내역'): lines.append(f"치료: {item.get('치료내역','')}")
+            html += make_box(title, lines, '#dc2626' if has_inop(item) else '#1a2744')
+        html += '<div class="mr-divider"></div>'
+
+    if s4:
+        html += '<div class="mr-sec-title"><span class="mr-sec-num">4</span>약물 상시복용</div>'
+        for item in s4:
+            if not isinstance(item, dict): continue
+            lines = [
+                f"성분명: {item.get('성분명','')}",
+                f"최초처방일: {item.get('최초처방일','')} | 최근처방일: {item.get('최근처방일','')}",
+                f"복용 상태: {'현재 복용 중' if item.get('복용중') else '과거 복용'}"
+            ]
+            html += make_box(f"{item.get('약물분류','')} — {item.get('약품명','')}", lines, '#7c3aed')
+        html += '<div class="mr-divider"></div>'
+
+    diseases_11 = ['암','백혈병','고혈압','협심증','심근경색','심장판막증','간경화증','뇌졸중','당뇨','에이즈HIV','항문질환']
+    해당목록 = s5.get('해당목록',[]) if isinstance(s5, dict) else []
+    미해당 = [d for d in diseases_11 if d not in 해당목록]
+    html += '<div class="mr-sec-title"><span class="mr-sec-num">5</span>최근 5년 이내 11대 질병</div>'
+    if 해당목록:
+        html += '<div style="margin-bottom:6px;"><b style="color:#dc2626;font-size:13px;">해당 있음:</b></div>'
+        html += '<div class="mr-d5-row">' + ''.join([f'<span class="mr-d5-bad">{d}</span>' for d in 해당목록]) + '</div>'
+        for item in (s5.get('상세',[]) if isinstance(s5, dict) else []):
+            if not isinstance(item, dict): continue
+            lines = [f"초진: {item.get('초진일','')} | 최종: {item.get('최종진료일','')} | 통원 {item.get('통원횟수',0)}회"]
+            for h in item.get('입원',[]):
+                if isinstance(h, dict): lines.append(f"입원: {h.get('날짜','')} · {h.get('병원','')} · {h.get('일수',0)}일")
+            for s in item.get('수술',[]):
+                if isinstance(s, dict): lines.append(f"수술: {s.get('수술명','')}")
+            for d in item.get('투약',[]):
+                if isinstance(d, dict): lines.append(f"투약: {d.get('약품명','')} ({d.get('용도','')}) — {d.get('합산일수',0)}일")
+            if item.get('검사내용'): lines.append(f"검사: {item.get('검사내용','')}")
+            html += make_box(item.get('질병명',''), lines, '#dc2626')
+    html += '<div style="margin:8px 0 6px;"><b style="color:#16a34a;font-size:13px;">해당 없음:</b></div>'
+    html += '<div class="mr-d5-row">' + ''.join([f'<span class="mr-d5-ok">{d}</span>' for d in 미해당]) + '</div>'
+    html += '<div class="mr-divider"></div>'
+
+    if cost_stats:
+        year_data = cost_stats.get('year',{})
+        total_paid = cost_stats.get('total_paid',0)
+        avg_paid = cost_stats.get('avg_paid',0)
+        total_count = cost_stats.get('total_count',0)
+        html += f'<div class="mr-stat-grid"><div class="mr-stat-box"><div class="mr-stat-label">총 본인부담금</div><div class="mr-stat-value">{total_paid:,}원</div></div><div class="mr-stat-box"><div class="mr-stat-label">연평균 본인부담금</div><div class="mr-stat-value" style="color:#2563eb;">{avg_paid:,}원</div></div><div class="mr-stat-box"><div class="mr-stat-label">총 진료 건수</div><div class="mr-stat-value">{total_count}건</div></div></div>'
+        html += '<div class="mr-sec-title"><span class="mr-sec-num">6</span>연도별 본인부담 의료비</div>'
+        for y, d in year_data.items():
+            html += f'<div style="display:flex;justify-content:space-between;padding:10px 14px;border:1px solid #e8eaf0;border-radius:10px;margin-bottom:8px;background:white;"><div><div style="font-size:14px;font-weight:800;color:#1a2744;">{y}년</div><div style="font-size:12px;color:#9ca3af;">{d["count"]}건 진료</div></div><div style="text-align:right;"><div style="font-size:15px;font-weight:900;color:#1D9E75;">{d["paid"]:,}원</div><div style="font-size:11px;color:#9ca3af;">보험혜택 {d["ins"]:,}원</div></div></div>'
+
+    if summary:
+        items_html = ''.join([f'<div class="mr-summary-item"><span class="mr-summary-arrow">▶</span><span class="mr-summary-text">{s}</span></div>' for s in summary])
+        html += f'<div class="mr-summary-box"><div class="mr-summary-title">핵심 병력 요약</div>{items_html}</div>'
+
+    html += '</div>'
+    return html
+
+
 def save_to_firestore(uid, cid, result, customer_name, today_str, cost_stats=None):
     try:
         import firebase_admin
@@ -47,16 +203,13 @@ def save_to_firestore(uid, cid, result, customer_name, today_str, cost_stats=Non
 
         db_fs = fs.client()
         doc_ref = db_fs.collection('users').document(uid).collection('customers').document(cid).collection('meta').document('medical_result')
+        # HTML로 변환해서 저장
+        html_content = generate_html(result, customer_name, today_str, cost_stats)
         doc_ref.set({
-            'result': result,
+            'html': html_content,
             'customerName': customer_name,
             'analyzedAt': fs.SERVER_TIMESTAMP,
             'today_str': today_str,
-            'cost_stats': {
-                'total_paid': cost_stats.get('total_paid', 0) if cost_stats else 0,
-                'avg_paid': cost_stats.get('avg_paid', 0) if cost_stats else 0,
-                'total_count': cost_stats.get('total_count', 0) if cost_stats else 0,
-            } if cost_stats else {}
         })
         return True
     except Exception as e:
@@ -1154,11 +1307,7 @@ if btn:
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits5y.items() if v['count']>=7
             },
-            # 5년 이내 전체 방문 (상세 표시용)
-            'visits_5y_all':{
-                code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
-                for code,v in visits5y.items()
-            },
+            # 5년 이내 전체 방문은 제거 (Claude가 7회 미만을 7일이상치료로 잘못 판단하는 원인)
             # 5년 이내 30일 이상 투약
             'drug_by_disease_5y':{
                 k:{'code':v['code'],'disease':v['disease'],'drug_name':v['drug_name'],
