@@ -661,6 +661,7 @@ def analyze(api_key, customer_name, structured, all_text):
   예: AM501 + AM5422 → "경추 디스크 (M501, M5422)"
 - 질병코드 표시 시 앞의 'A' 제거 (예: AM513 → M513)
 - 부위가 다른 경우 반드시 분리 (경추 ≠ 요추 ≠ 무릎)
+- 중요: section3에 이미 포함될 질병(5년 이내 병력)과 겹치면 section1에서 제외하고 section3에 "3개월이내진료" 고지항목 추가
 
 ■ section2: 최근 1년 이내 재검사/추가검사
 - 기준: 검사 결과 이상 소견으로 추가 정밀검사를 받은 경우만 포함
@@ -677,21 +678,45 @@ def analyze(api_key, customer_name, structured, all_text):
 - 질병코드 표시 시 앞의 'A' 제거
 
 ■ section3: 최근 5년 이내 병력 (질병별 상세)
-- visits_5y_7plus + drug_by_disease_5y + surgeries_5y + inpatient_5y를 질병별로 통합
-- 관련 질병코드는 하나로 묶기 (예: AL239 + AL309 → 피부염으로 묶기)
-- 질병코드 표시 시 앞의 'A' 제거 (예: AM513 → M513, AL239 → L239)
+- 아래 데이터 중 하나라도 해당되는 질병을 전부 포함:
+  · visits_5y_7plus (통원 7회 이상)
+  · visits_5y_all (통원 7회 미만이어도 투약/수술/입원 있으면 포함)
+  · drug_by_disease_5y (30일 이상 투약)
+  · surgeries_5y (수술)
+  · inpatient_5y (입원)
+
+- 질병 그룹핑 규칙:
+  · 의학적으로 같은 부위, 같은 계열 질병코드는 하나로 묶기
+    예: AL239(알레르기성접촉피부염) + AL309(피부염) → "피부염 (L239, L309)"
+    예: AM501(경추간판장애) + AM5422(경추통증) → "경추 디스크 (M501, M5422)"
+  · 부위가 다르면 반드시 분리 (경추 ≠ 요추, 무릎 ≠ 어깨)
+  · 애매하면 분리
+
+- 질병코드 표시 시 앞의 'A' 반드시 제거 (AM513 → M513, AL239 → L239)
+
+- 초진일 규칙:
+  · 초진일 = 기본진료정보(visits_5y_all)의 첫 방문일 기준
+  · 수술일 ≠ 초진일 (수술일을 초진일로 쓰지 말 것)
+
 - 각 질병별로 아래 정보 전부 포함:
   · 초진일, 최종진료일, 통원횟수
-  · 입원 여부 (날짜/병원/일수)
-  · 수술 여부 (수술명 상세/날짜/병원/부위)
-  · 투약 (약품명/성분명/치료목적/합산일수)
+  · 입원 여부 (날짜/병원/일수, 없으면 "없음")
+  · 수술 여부 (수술명 상세/날짜/병원/부위, 없으면 "없음")
+  · 투약: 약품별로 처방이력 날짜+일수 전부 + 합산일수
+    예: 알테렌투엑스정 (추간판변성치료) → 2024-01-30: 7일 / 2024-06-15: 7일 / 합계: 32일
   · 치료내역 (어떤 치료를 받았는지 구체적으로)
-  · 해당 고지항목 규칙:
-    - "7일이상치료": visits_5y_7plus에 있는 것만 (통원 7회 이상인 것만, 절대 재계산 금지)
-    - "30일이상투약": drug_by_disease_5y에 있는 것만
-    - "입원": inpatient_5y에 있는 것
-    - "수술": surgeries_5y에 있는 것
-    - visits_5y_7plus에 없는 질병은 절대 "7일이상치료" 고지항목에 넣지 말 것
+
+- 고지항목 규칙 (중요):
+  · "7일이상치료": visits_5y_7plus에 있는 것만 (통원 7회 이상만, 절대 재계산 금지)
+  · "30일이상투약": drug_by_disease_5y에 있는 것만
+  · "입원": inpatient_5y에 있는 것
+  · "수술": surgeries_5y에 있는 것
+  · visits_5y_7plus에 없는 질병은 절대 "7일이상치료" 고지항목에 넣지 말 것
+
+- 3개월 이내 진료와 5년 이내 병력이 같은 질병이면:
+  · section3에만 표시하고 section1에서는 제외
+  · 고지항목에 "3개월이내진료"도 추가
+
 - 결과 정렬: 수술 또는 입원 있는 것을 맨 앞에 배치
 
 ■ section4: 약물 상시복용
@@ -739,7 +764,7 @@ def analyze(api_key, customer_name, structured, all_text):
       "통원횟수": 0,
       "입원": [{{"날짜": "YYYY-MM-DD", "병원": "병원명", "일수": 0}}],
       "수술": [{{"수술명": "구체적인 수술명 및 부위", "날짜": "YYYY-MM-DD", "병원": "병원명"}}],
-      "투약": [{{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "합산일수": 0}}],
+      "투약": [{{"약품명": "약품명", "성분명": "성분명", "용도": "치료목적", "처방이력": [{{"날짜": "YYYY-MM-DD", "일수": 0}}], "합산일수": 0}}],
       "치료내역": "구체적인 치료 내용",
       "고지항목": ["7일이상치료", "30일이상투약", "입원", "수술"] 
     }}
@@ -895,10 +920,16 @@ def render(r, customer_name, today_str, cost_stats=None):
             # 투약
             투약목록 = item.get('투약',[])
             if 투약목록:
-                lines.append('💊 투약 (30일 이상):')
+                lines.append('💊 투약:')
                 for d in 투약목록:
-                    if isinstance(d, dict):
-                        lines.append(f"　· {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')} — 합계 {d.get('합산일수',0)}일")
+                    if not isinstance(d, dict): continue
+                    lines.append(f"　· {d.get('약품명','')} ({d.get('성분명','')}) — {d.get('용도','')}")
+                    처방이력 = d.get('처방이력',[])
+                    if 처방이력:
+                        for p in 처방이력:
+                            if isinstance(p, dict):
+                                lines.append(f"　　{p.get('날짜','')}: {p.get('일수',0)}일")
+                    lines.append(f"　　합계: {d.get('합산일수',0)}일")
 
             # 치료내역
             if item.get('치료내역'):
@@ -1307,7 +1338,11 @@ if btn:
                 code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
                 for code,v in visits5y.items() if v['count']>=7
             },
-            # 5년 이내 전체 방문은 제거 (Claude가 7회 미만을 7일이상치료로 잘못 판단하는 원인)
+            # 5년 이내 전체 방문 (표시용 - 7회 미만 포함, 단 7일이상치료 고지항목엔 넣지 않음)
+            'visits_5y_all':{
+                code:{'disease':v['disease'],'count':v['count'],'first':v['first'],'last':v['last']}
+                for code,v in visits5y.items()
+            },
             # 5년 이내 30일 이상 투약
             'drug_by_disease_5y':{
                 k:{'code':v['code'],'disease':v['disease'],'drug_name':v['drug_name'],
